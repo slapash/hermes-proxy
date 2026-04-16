@@ -14,6 +14,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,41 @@ _RATE_LIMIT_WINDOW = 60  # seconds
 # App
 # ---------------------------------------------------------------------------
 app = FastAPI()
+
+# ---------------------------------------------------------------------------
+# Middleware
+# ---------------------------------------------------------------------------
+
+class _MaxBodyMiddleware(BaseHTTPMiddleware):
+    """Reject POST bodies over 1 MB to prevent memory exhaustion."""
+    async def dispatch(self, request, call_next):
+        if request.method == "POST":
+            content_length = request.headers.get("content-length")
+            if content_length and int(content_length) > 1_048_576:
+                return JSONResponse({"error": "Request too large"}, status_code=413)
+        return await call_next(request)
+
+
+class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers to every response."""
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none';"
+        )
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
+
+app.add_middleware(_SecurityHeadersMiddleware)
+app.add_middleware(_MaxBodyMiddleware)
 
 # ---------------------------------------------------------------------------
 # Helpers
