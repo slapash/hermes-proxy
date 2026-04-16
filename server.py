@@ -32,7 +32,7 @@ if _ENV_PATH.exists():
 _HERMES_PROXY_PASSWORD = os.environ.get("HERMES_PROXY_PASSWORD", "")
 _API_SERVER_KEY = os.environ.get("API_SERVER_KEY", "")
 _API_SERVER_URL = os.environ.get("API_SERVER_URL", "http://127.0.0.1:8642")
-_STATE_DB_PATH = os.environ.get("STATE_DB_PATH", "/Users/clawd/.hermes/state.db")
+_STATE_DB_PATH = os.environ.get("STATE_DB_PATH", str(Path.home() / ".hermes" / "state.db"))
 
 if not _HERMES_PROXY_PASSWORD:
     raise RuntimeError("HERMES_PROXY_PASSWORD is unset or empty — refusing to start")
