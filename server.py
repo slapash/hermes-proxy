@@ -67,6 +67,7 @@ _SESSION_ID_RE = re.compile(r'^[0-9a-f-]{36,72}$')
 _login_attempts = {}  # type: dict
 _RATE_LIMIT_MAX = 5
 _RATE_LIMIT_WINDOW = 60  # seconds
+_RATE_LIMIT_EVICT_AFTER = _RATE_LIMIT_WINDOW * 10  # evict entries older than 600s
 
 # ---------------------------------------------------------------------------
 # App
@@ -144,6 +145,11 @@ def _auth_error() -> JSONResponse:
 def _check_rate_limit(ip: str) -> bool:
     """Return True if request is allowed, False if rate-limited."""
     now = time.monotonic()
+    # Opportunistically evict stale entries to prevent unbounded growth
+    stale = [k for k, e in _login_attempts.items()
+             if now - e["window_start"] > _RATE_LIMIT_EVICT_AFTER]
+    for k in stale:
+        del _login_attempts[k]
     entry = _login_attempts.get(ip)
     if entry is None:
         _login_attempts[ip] = {"count": 1, "window_start": now}
