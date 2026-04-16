@@ -164,6 +164,15 @@ async def auth_status(request: Request) -> Response:
     return JSONResponse({"authenticated": _is_authenticated(request)})
 
 
+@app.get("/api/session/validate")
+async def session_validate(request: Request) -> Response:
+    if not _is_authenticated(request):
+        return _auth_error()
+    token = _get_token(request)
+    session_id = browser_sessions.get(token) if token else None
+    return JSONResponse({"valid": session_id is not None, "session_id": session_id})
+
+
 # ---------------------------------------------------------------------------
 # API routes
 # ---------------------------------------------------------------------------

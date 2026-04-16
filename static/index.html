@@ -174,6 +174,25 @@
     .msg.user .bubble[data-ts]:hover::after { right: 0; }
     .msg.assistant .bubble[data-ts]:hover::after { left: 0; }
 
+    /* session-lost banner */
+    #session-lost-banner {
+      display: none;
+      background: #2a1a00;
+      border-bottom: 1px solid #664400;
+      color: #ffaa44;
+      font-size: 13px;
+      padding: 8px 16px;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    #session-lost-banner.visible { display: flex; }
+    #session-lost-banner span { flex: 1; }
+    #session-lost-dismiss {
+      background: none; border: none; color: #ffaa44;
+      font-size: 16px; cursor: pointer; line-height: 1; padding: 0 4px;
+    }
+
     /* thinking indicator */
     #thinking {
       align-self: flex-start; color: var(--muted); font-size: 13px;
@@ -265,6 +284,10 @@
       <button id="hamburger">&#9776;</button>
       <span id="topbar-title">hermes</span>
     </div>
+    <div id="session-lost-banner">
+      <span>Session mapping lost — server was restarted. Pick a session from the sidebar or start a new one.</span>
+      <button id="session-lost-dismiss" title="Dismiss">&#10005;</button>
+    </div>
     <div id="thread"></div>
     <div id="input-area">
       <textarea id="msg-input" placeholder="Message hermes…" rows="1"></textarea>
@@ -276,7 +299,7 @@
 <script>
 (() => {
   // ── State ──
-  let currentSessionId = null;
+  let currentSessionId = localStorage.getItem('hermes-session-id') || null;
   let streaming = false;
 
   // ── DOM refs ──
@@ -293,6 +316,8 @@
   const hamburger = document.getElementById('hamburger');
   const sidebar = document.getElementById('sidebar');
   const sidebarOverlay = document.getElementById('sidebar-overlay');
+  const sessionLostBanner = document.getElementById('session-lost-banner');
+  const sessionLostDismiss = document.getElementById('session-lost-dismiss');
 
   // ── Utilities ──
   function closeSidebar() {
@@ -375,7 +400,28 @@
     loginOverlay.classList.add('hidden');
     appEl.classList.remove('hidden');
     loadSessions();
+    validateSession();
   }
+
+  async function validateSession() {
+    // Only meaningful if the client thinks it has an active session.
+    // If currentSessionId is null we're already in a clean state.
+    if (!currentSessionId) return;
+    try {
+      const res = await fetch('/api/session/validate');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.valid) {
+        sessionLostBanner.classList.add('visible');
+      }
+    } catch {}
+  }
+
+  function dismissSessionLostBanner() {
+    sessionLostBanner.classList.remove('visible');
+  }
+
+  sessionLostDismiss.addEventListener('click', dismissSessionLostBanner);
 
   // ── Sessions ──
   async function loadSessions() {
@@ -404,6 +450,7 @@
 
   async function loadSession(id) {
     currentSessionId = id;
+    dismissSessionLostBanner();
     closeSidebar();
     updateActiveSession();
     thread.innerHTML = '';
@@ -426,6 +473,8 @@
 
   newSessionBtn.addEventListener('click', () => {
     currentSessionId = null;
+    localStorage.removeItem('hermes-session-id');
+    dismissSessionLostBanner();
     thread.innerHTML = '';
     updateActiveSession();
     closeSidebar();
@@ -521,6 +570,7 @@
     sendBtn.disabled = true;
     msgInput.value = '';
     msgInput.style.height = 'auto';
+    dismissSessionLostBanner();
 
     appendMessage('user', text, false, Date.now());
     const thinkingEl = showThinking();
@@ -546,6 +596,7 @@
       if (newSessionId) {
         const wasNew = !currentSessionId;
         currentSessionId = newSessionId;
+        localStorage.setItem('hermes-session-id', currentSessionId);
         if (wasNew) await loadSessions();
         updateActiveSession();
       }
@@ -581,6 +632,7 @@
             if (eventType === 'session' && json.hermes_session_id) {
               // Capture session ID emitted by proxy at end of stream
               currentSessionId = json.hermes_session_id;
+              localStorage.setItem('hermes-session-id', currentSessionId);
               await loadSessions();
               updateActiveSession();
             } else {
