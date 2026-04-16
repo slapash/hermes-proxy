@@ -4,7 +4,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Hermes Chat</title>
-  <script src="/static/marked.min.js"></script>
+  <!-- marked.js v15.0.12 — update version + integrity hash together when upgrading -->
+  <script
+    src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"
+    integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+"
+    crossorigin="anonymous"
+  ></script>
+  <!-- DOMPurify v3.2.4 — update version + integrity hash together when upgrading -->
+  <script
+    src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"
+    integrity="sha384-eEu5CTj3qGvu9PdJuS+YlkNi7d2XxQROAFYOr59zgObtlcux1ae1Il3u7jvdCSWu"
+    crossorigin="anonymous"
+  ></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -509,7 +520,7 @@
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     if (role === 'assistant') {
-      bubble.innerHTML = content ? marked.parse(content) : '';
+      bubble.innerHTML = content ? DOMPurify.sanitize(marked.parse(content)) : '';
     } else {
       bubble.textContent = content || '';
     }
@@ -649,7 +660,7 @@
                   thread.appendChild(msg);
                 }
                 assistantContent += delta;
-                assistantBubble.innerHTML = marked.parse(assistantContent);
+                assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
                 scrollToBottom();
               }
             }
@@ -670,7 +681,7 @@
             if (delta) {
               assistantContent += delta;
               if (assistantBubble) {
-                assistantBubble.innerHTML = marked.parse(assistantContent);
+                assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
                 scrollToBottom();
               }
             }
@@ -680,7 +691,7 @@
 
       // Final render (ensure complete markdown)
       if (assistantBubble && assistantContent) {
-        assistantBubble.innerHTML = marked.parse(assistantContent);
+        assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
       }
 
       // Refresh sessions after first message in new session
