@@ -1,0 +1,391 @@
+(() => {
+  // ── State ──
+  let currentSessionId = localStorage.getItem('hermes-session-id') || null;
+  let streaming = false;
+
+  // ── DOM refs ──
+  const loginOverlay = document.getElementById('login-overlay');
+  const appEl = document.getElementById('app');
+  const pwInput = document.getElementById('pw-input');
+  const loginBtn = document.getElementById('login-btn');
+  const loginError = document.getElementById('login-error');
+  const sessionList = document.getElementById('session-list');
+  const thread = document.getElementById('thread');
+  const msgInput = document.getElementById('msg-input');
+  const sendBtn = document.getElementById('send-btn');
+  const newSessionBtn = document.getElementById('new-session-btn');
+  const hamburger = document.getElementById('hamburger');
+  const sidebar = document.getElementById('sidebar');
+  const sidebarOverlay = document.getElementById('sidebar-overlay');
+  const sessionLostBanner = document.getElementById('session-lost-banner');
+  const sessionLostDismiss = document.getElementById('session-lost-dismiss');
+  const logoutBtn = document.getElementById('logout-btn');
+
+  // ── Utilities ──
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    sidebarOverlay.classList.remove('open');
+  }
+  function openSidebar() {
+    sidebar.classList.add('open');
+    sidebarOverlay.classList.add('open');
+  }
+  hamburger.addEventListener('click', openSidebar);
+  sidebarOverlay.addEventListener('click', closeSidebar);
+
+  function scrollToBottom() {
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  function formatDate(ts) {
+    if (!ts) return '';
+    try {
+      const d = new Date(ts.includes('T') || ts.includes('Z') ? ts : ts + 'Z');
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    } catch { return ''; }
+  }
+
+  // Auto-resize textarea
+  msgInput.addEventListener('input', () => {
+    msgInput.style.height = 'auto';
+    msgInput.style.height = Math.min(msgInput.scrollHeight, 200) + 'px';
+  });
+
+  // Enter = send, Shift+Enter = newline
+  msgInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!streaming) sendMessage();
+    }
+  });
+
+  // ── Login ──
+  async function checkAuth() {
+    const res = await fetch('/auth/status');
+    const data = await res.json();
+    if (data.authenticated) {
+      showApp();
+    } else {
+      loginOverlay.classList.remove('hidden');
+    }
+  }
+
+  async function doLogin() {
+    loginError.textContent = '';
+    const pw = pwInput.value;
+    const res = await fetch('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw }),
+    });
+    if (res.ok) {
+      loginOverlay.classList.add('hidden');
+      // Reset any iOS zoom that may have been triggered by the password field
+      const mv = document.querySelector('meta[name=viewport]');
+      if (mv) {
+        mv.content = 'width=device-width, initial-scale=1.0, viewport-fit=cover';
+      }
+      showApp();
+    } else if (res.status === 401) {
+      loginError.textContent = 'Wrong password';
+    } else if (res.status === 429) {
+      loginError.textContent = 'Too many attempts — wait 60 s';
+    } else {
+      loginError.textContent = 'Login failed';
+    }
+  }
+
+  loginBtn.addEventListener('click', doLogin);
+  pwInput.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+  function showApp() {
+    loginOverlay.classList.add('hidden');
+    appEl.classList.remove('hidden');
+    loadSessions();
+    validateSession();
+  }
+
+  async function validateSession() {
+    // Only meaningful if the client thinks it has an active session.
+    // If currentSessionId is null we're already in a clean state.
+    if (!currentSessionId) return;
+    try {
+      const res = await fetch('/api/session/validate');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.valid) {
+        sessionLostBanner.classList.add('visible');
+      }
+    } catch {}
+  }
+
+  function dismissSessionLostBanner() {
+    sessionLostBanner.classList.remove('visible');
+  }
+
+  sessionLostDismiss.addEventListener('click', dismissSessionLostBanner);
+
+  logoutBtn.addEventListener('click', async () => {
+    await fetch('/auth/logout', { method: 'POST' });
+    localStorage.removeItem('hermes-session-id');
+    location.reload();
+  });
+
+  // ── Sessions ──
+  async function loadSessions() {
+    try {
+      const res = await fetch('/api/sessions');
+      if (!res.ok) return;
+      const sessions = await res.json();
+      renderSessions(sessions);
+    } catch {}
+  }
+
+  function renderSessions(sessions) {
+    sessionList.innerHTML = '';
+    for (const s of sessions) {
+      const el = document.createElement('div');
+      el.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
+      el.dataset.id = s.id;
+      const title = s.title || s.id.slice(0, 16) + '…';
+      el.innerHTML = `<div class="session-title">${esc(title)}</div>
+        <div class="session-date">${esc(formatDate(s.started_at))}</div>`;
+      el.addEventListener('click', () => loadSession(s.id));
+      sessionList.appendChild(el);
+    }
+    sessionList.scrollTop = 0;
+  }
+
+  async function loadSession(id) {
+    currentSessionId = id;
+    dismissSessionLostBanner();
+    closeSidebar();
+    updateActiveSession();
+    thread.innerHTML = '';
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages`);
+      if (!res.ok) return;
+      const messages = await res.json();
+      for (const m of messages) {
+        appendMessage(m.role, m.content, m.timestamp);
+      }
+      scrollToBottom();
+    } catch {}
+  }
+
+  function updateActiveSession() {
+    document.querySelectorAll('.session-item').forEach(el => {
+      el.classList.toggle('active', el.dataset.id === currentSessionId);
+    });
+  }
+
+  newSessionBtn.addEventListener('click', () => {
+    currentSessionId = null;
+    localStorage.removeItem('hermes-session-id');
+    dismissSessionLostBanner();
+    thread.innerHTML = '';
+    updateActiveSession();
+    closeSidebar();
+    msgInput.focus();
+  });
+
+  // ── Message rendering ──
+  function esc(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function formatTime(ts) {
+    if (!ts) return '';
+    try {
+      // ts can be a Unix float (from DB) or ms timestamp (from Date.now())
+      const ms = ts > 1e11 ? ts : ts * 1000;
+      const d = new Date(ms);
+      return d.toLocaleString(undefined, {
+        month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      });
+    } catch { return ''; }
+  }
+
+  function appendMessage(role, content, ts = null) {
+    const msg = document.createElement('div');
+    msg.className = `msg ${role}`;
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    if (role === 'assistant') {
+      bubble.innerHTML = content ? DOMPurify.sanitize(marked.parse(content)) : '';
+    } else {
+      bubble.textContent = content || '';
+    }
+    if (ts) bubble.dataset.ts = formatTime(ts);
+    msg.appendChild(bubble);
+    thread.appendChild(msg);
+    scrollToBottom();
+    return bubble;
+  }
+
+  function showThinking() {
+    const msg = document.createElement('div');
+    msg.id = 'thinking-indicator';
+    msg.className = 'msg assistant';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.style.cssText = 'color:var(--accent);letter-spacing:3px;animation:pulse 1.2s ease-in-out infinite;';
+    bubble.textContent = '● ● ●';
+    msg.appendChild(bubble);
+    thread.appendChild(msg);
+    scrollToBottom();
+    return msg;
+  }
+
+  function removeThinking() {
+    const el = document.getElementById('thinking-indicator');
+    if (el) el.remove();
+  }
+
+  // ── Send ──
+  sendBtn.addEventListener('click', sendMessage);
+
+  async function sendMessage() {
+    const text = msgInput.value.trim();
+    if (!text || streaming) return;
+
+    streaming = true;
+    sendBtn.disabled = true;
+    msgInput.value = '';
+    msgInput.style.height = 'auto';
+    dismissSessionLostBanner();
+
+    appendMessage('user', text, Date.now());
+    showThinking();
+
+    let assistantBubble = null;
+    let assistantContent = '';
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, session_id: currentSessionId }),
+      });
+
+      if (!res.ok) {
+        removeThinking();
+        appendMessage('assistant', '_(Error contacting server)_');
+        return;
+      }
+
+      // Capture session id from response headers
+      const newSessionId = res.headers.get('X-Hermes-Session-Id');
+      if (newSessionId) {
+        const wasNew = !currentSessionId;
+        currentSessionId = newSessionId;
+        localStorage.setItem('hermes-session-id', currentSessionId);
+        if (wasNew) await loadSessions();
+        updateActiveSession();
+      }
+
+      const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE events (split on double newline)
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop(); // keep incomplete last part
+
+        for (const part of parts) {
+          const lines = part.split('\n');
+          let eventType = 'message';
+          let dataLine = null;
+          for (const line of lines) {
+            if (line.startsWith('event:')) {
+              eventType = line.slice(6).trim();
+            } else if (line.startsWith('data:')) {
+              dataLine = line.slice(5).trim();
+            }
+          }
+          if (!dataLine || dataLine === '[DONE]') continue;
+          try {
+            const json = JSON.parse(dataLine);
+            if (eventType === 'session' && json.hermes_session_id) {
+              // Capture session ID emitted by proxy at end of stream
+              currentSessionId = json.hermes_session_id;
+              localStorage.setItem('hermes-session-id', currentSessionId);
+              await loadSessions();
+              updateActiveSession();
+            } else {
+              const delta = json?.choices?.[0]?.delta?.content;
+              if (delta) {
+                if (!assistantBubble) {
+                  removeThinking();
+                  const msg = document.createElement('div');
+                  msg.className = 'msg assistant';
+                  assistantBubble = document.createElement('div');
+                  assistantBubble.className = 'bubble';
+                  assistantBubble.dataset.ts = formatTime(Date.now());
+                  msg.appendChild(assistantBubble);
+                  thread.appendChild(msg);
+                }
+                assistantContent += delta;
+                assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
+                scrollToBottom();
+              }
+            }
+          } catch {}
+        }
+      }
+
+      // Process any remaining buffer
+      if (buffer) {
+        const lines = buffer.split('\n');
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') continue;
+          try {
+            const json = JSON.parse(data);
+            const delta = json?.choices?.[0]?.delta?.content;
+            if (delta) {
+              assistantContent += delta;
+              if (assistantBubble) {
+                assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
+                scrollToBottom();
+              }
+            }
+          } catch {}
+        }
+      }
+
+      // Final render (ensure complete markdown)
+      if (assistantBubble && assistantContent) {
+        assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
+      }
+
+      // Refresh sessions after first message in new session
+      if (newSessionId) await loadSessions();
+
+    } catch (err) {
+      removeThinking();
+      if (!assistantBubble) {
+        appendMessage('assistant', '_(Stream error)_');
+      }
+    } finally {
+      streaming = false;
+      sendBtn.disabled = false;
+      msgInput.focus();
+    }
+  }
+
+  // ── Boot ──
+  checkAuth();
+})();
