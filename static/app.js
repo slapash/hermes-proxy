@@ -80,6 +80,12 @@
     });
     if (res.ok) {
       loginOverlay.classList.add('hidden');
+      // Fresh login always starts with a clean session slate.
+      // Prevents the session-lost banner from firing when the server was
+      // restarted (in-memory mapping cleared) but localStorage still holds
+      // a stale session ID from a prior run.
+      currentSessionId = null;
+      localStorage.removeItem('hermes-session-id');
       // Reset any iOS zoom that may have been triggered by the password field
       const mv = document.querySelector('meta[name=viewport]');
       if (mv) {

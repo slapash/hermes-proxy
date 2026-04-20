@@ -1,4 +1,3 @@
-import hashlib
 import hmac
 import json as _json
 import logging
@@ -38,27 +37,29 @@ _HERMES_PROXY_PASSWORD = os.environ.get("HERMES_PROXY_PASSWORD", "")
 _API_SERVER_KEY = os.environ.get("API_SERVER_KEY", "")
 _API_SERVER_URL = os.environ.get("API_SERVER_URL", "http://127.0.0.1:8642")
 _STATE_DB_PATH = os.environ.get("STATE_DB_PATH", str(Path.home() / ".hermes" / "state.db"))
+_SIGNING_KEY_HEX = os.environ.get("HERMES_PROXY_SIGNING_KEY", "")
 
 if not _HERMES_PROXY_PASSWORD:
     raise RuntimeError("HERMES_PROXY_PASSWORD is unset or empty — refusing to start")
 if not _API_SERVER_KEY:
     raise RuntimeError("API_SERVER_KEY is unset or empty — refusing to start")
+if not _SIGNING_KEY_HEX:
+    raise RuntimeError("HERMES_PROXY_SIGNING_KEY is unset — refusing to start")
 
-# Signing key derived via PBKDF2 — slows offline brute-force against captured tokens.
-# Fixed salt is intentional: purpose is KDF, not password storage.
-# Rotating the password invalidates all existing cookies automatically.
-# Note: ~100ms startup cost for the KDF derivation is expected and intentional.
-_SIGNING_KEY = hashlib.pbkdf2_hmac(
-    'sha256',
-    _HERMES_PROXY_PASSWORD.encode(),
-    b'hermes-proxy-signing-key',
-    iterations=100_000,
-)
+try:
+    _SIGNING_KEY = bytes.fromhex(_SIGNING_KEY_HEX)
+except ValueError:
+    raise RuntimeError("HERMES_PROXY_SIGNING_KEY must be a valid hex string")
+if len(_SIGNING_KEY) < 32:
+    raise RuntimeError("HERMES_PROXY_SIGNING_KEY must be at least 32 bytes (64 hex chars)")
 
 # ---------------------------------------------------------------------------
 # In-memory state
 # ---------------------------------------------------------------------------
-browser_sessions = {}  # type: dict  # cookie_token -> hermes_session_id
+browser_sessions = {}       # type: dict  # cookie_token -> hermes_session_id
+_session_created: dict = {} # token -> float (time.time()) for TTL eviction
+
+_SESSION_TTL = 2_592_000    # 30 days — matches cookie max_age
 
 # Session ID format: hermes api_server produces "api-<16 hex chars>"
 # CLI sessions use "YYYYMMDD_HHMMSS_<6hex>". Allow word chars + hyphens, 8-80 chars.
@@ -117,7 +118,7 @@ app.add_middleware(_MaxBodyMiddleware)
 def _make_token() -> str:
     """Generate a signed auth token: <random_hex>.<hmac_sig>"""
     payload = secrets.token_hex(32)
-    sig = hmac.new(_SIGNING_KEY, payload.encode(), hashlib.sha256).hexdigest()
+    sig = hmac.new(_SIGNING_KEY, payload.encode(), "sha256").hexdigest()
     return f"{payload}.{sig}"
 
 
@@ -126,7 +127,7 @@ def _verify_token(token: str) -> bool:
     if not token or "." not in token:
         return False
     payload, _, sig = token.rpartition(".")
-    expected = hmac.new(_SIGNING_KEY, payload.encode(), hashlib.sha256).hexdigest()
+    expected = hmac.new(_SIGNING_KEY, payload.encode(), "sha256").hexdigest()
     return hmac.compare_digest(expected, sig)
 
 
@@ -162,6 +163,15 @@ def _check_rate_limit(ip: str) -> bool:
     if entry["count"] > _RATE_LIMIT_MAX:
         return False
     return True
+
+
+def _evict_stale_browser_sessions() -> None:
+    """Evict browser_sessions entries older than SESSION_TTL (30 days)."""
+    cutoff = time.time() - _SESSION_TTL
+    stale = [k for k, ts in _session_created.items() if ts < cutoff]
+    for k in stale:
+        browser_sessions.pop(k, None)
+        _session_created.pop(k, None)
 
 
 def _set_auth_cookie(response: Response, token: str) -> None:
@@ -210,6 +220,7 @@ async def auth_logout(request: Request) -> Response:
     token = _get_token(request)
     if token:
         browser_sessions.pop(token, None)
+        _session_created.pop(token, None)
     response = JSONResponse({"ok": True})
     _clear_auth_cookie(response)
     return response
@@ -238,6 +249,7 @@ async def api_chat(request: Request) -> Response:
     if not _is_authenticated(request):
         return _auth_error()
 
+    _evict_stale_browser_sessions()
     token = _get_token(request)
 
     try:
@@ -252,6 +264,8 @@ async def api_chat(request: Request) -> Response:
         if session_id_override:
             if not _SESSION_ID_RE.match(str(session_id_override)):
                 return JSONResponse({"error": "Invalid session_id"}, status_code=400)
+            if token not in _session_created:
+                _session_created[token] = time.time()
             browser_sessions[token] = session_id_override
         else:
             # Explicit null = new session requested, clear the mapping
@@ -282,6 +296,8 @@ async def api_chat(request: Request) -> Response:
             ) as upstream_response:
                 new_session_id = upstream_response.headers.get("x-hermes-session-id")
                 if new_session_id and token:
+                    if token not in _session_created:
+                        _session_created[token] = time.time()
                     browser_sessions[token] = new_session_id
 
                 async for chunk in upstream_response.aiter_bytes():
