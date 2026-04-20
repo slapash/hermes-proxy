@@ -4,6 +4,9 @@ A lightweight chat frontend and reverse proxy for [Hermes Agent](https://github.
 
 Hermes ships with a management dashboard (`:9119`) but no chat UI. hermes-proxy fills that gap: it sits in front of the Hermes `api_server` platform, handles authentication, and serves a minimal browser-based chat interface with session history, SSE streaming, and mobile support.
 
+Note that this intended to be reasonably secure, but you should consider that running internet-facing services is inherently high risk. My recommendation is to expose this via Tailscale, which means that you can also leverage Tailscale Serve for HTTPS.
+
+Feel free to submit any questions, PRs or features - this is a first pass, but I'd love to see some community feedback. Thanks!
 ---
 
 ## Features
