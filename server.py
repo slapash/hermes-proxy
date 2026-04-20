@@ -202,8 +202,11 @@ async def auth_login(request: Request) -> Response:
 
     try:
         body = await request.json()
-    except Exception:
+    except json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    except Exception as exc:
+        logger.error("Unexpected error parsing login body: %s", exc)
+        return JSONResponse({"error": "Bad request"}, status_code=400)
 
     password = body.get("password", "")
     if not hmac.compare_digest(password, _HERMES_PROXY_PASSWORD):
@@ -254,8 +257,11 @@ async def api_chat(request: Request) -> Response:
 
     try:
         body = await request.json()
-    except Exception:
+    except json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    except Exception as exc:
+        logger.error("Unexpected error parsing chat body: %s", exc)
+        return JSONResponse({"error": "Bad request"}, status_code=400)
 
     message = body.get("message", "")
     session_id_override = body.get("session_id")
