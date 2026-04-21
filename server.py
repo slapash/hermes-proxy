@@ -513,6 +513,18 @@ async def api_session_rename(session_id: str, request: Request) -> Response:
                 (session_id, name, time.time()),
             )
             conn.commit()
+        # Lazy eviction: remove session_meta rows whose session_id no longer exists
+        # in state.db. Runs after every successful rename -- no background worker needed.
+        try:
+            with sqlite3.connect(_PROXY_META_DB_PATH, timeout=5) as pmconn:
+                pmconn.execute(f"ATTACH DATABASE ? AS statedb", (_STATE_DB_PATH,))
+                pmconn.execute(
+                    "DELETE FROM session_meta WHERE session_id NOT IN "
+                    "(SELECT id FROM statedb.sessions)"
+                )
+                pmconn.commit()
+        except Exception as evict_exc:
+            logger.warning("proxy_meta.db eviction failed (non-fatal): %s", evict_exc)
         return JSONResponse({"ok": True})
     except Exception as exc:
         logger.error("DB error in api_session_rename: %s", exc)

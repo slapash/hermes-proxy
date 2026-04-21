@@ -247,7 +247,10 @@ If the search index is unavailable (e.g. a very old Hermes install without FTS5 
 
 ## Session rename
 
-Double-click any session title in the sidebar to rename it. Type a new name and press Enter (or click away) to save. Press Escape to cancel. Custom names are stored in `proxy_meta.db` (separate from the Hermes `state.db`) and persist across proxy restarts.
+**Desktop:** Double-click any session title in the sidebar to rename it.
+**Mobile:** First tap a session to load it, then tap its title again to rename it.
+
+Type a new name and press Enter (or tap away) to save. Press Escape to cancel. Custom names are stored in `proxy_meta.db` (separate from the Hermes `state.db`) and persist across proxy restarts.
 
 ---
 

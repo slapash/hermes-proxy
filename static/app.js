@@ -157,6 +157,59 @@
     } catch {}
   }
 
+  async function _renameSession(id, titleEl) {
+    const currentName = titleEl.textContent;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'session-title-input';
+    input.value = currentName;
+
+    // Prevent taps on the input from bubbling to the session-item click listener
+    input.addEventListener('click', e => e.stopPropagation());
+    input.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let committed = false;
+
+    async function commit() {
+      if (committed) return;
+      committed = true;
+      const newName = input.value.trim();
+      if (newName && newName !== currentName) {
+        try {
+          await fetch(`/api/sessions/${encodeURIComponent(id)}/rename`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName }),
+          });
+          titleEl.textContent = newName;
+        } catch {
+          titleEl.textContent = currentName;
+        }
+      } else {
+        titleEl.textContent = currentName;
+      }
+      input.replaceWith(titleEl);
+    }
+
+    function cancel() {
+      if (committed) return;
+      committed = true;
+      titleEl.textContent = currentName;
+      input.replaceWith(titleEl);
+    }
+
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    });
+  }
+
   function renderSessions(sessions, searchMode = false) {
     sessionList.innerHTML = '';
     for (const s of sessions) {
@@ -175,6 +228,20 @@
         if (searchMode) {
           searchInput.value = '';
           loadSessions();
+        }
+      });
+      const titleEl = el.querySelector('.session-title');
+      titleEl.addEventListener('dblclick', e => {
+        e.stopPropagation();
+        _renameSession(s.id, titleEl);
+      });
+      // Mobile: single tap on title of already-active session triggers rename.
+      // Guard: skip if titleEl is already replaced by the rename input (dblclick fires
+      // two click events on desktop -- the second would re-enter _renameSession).
+      titleEl.addEventListener('click', e => {
+        if (currentSessionId === s.id && titleEl.isConnected) {
+          e.stopPropagation();
+          _renameSession(s.id, titleEl);
         }
       });
       sessionList.appendChild(el);
