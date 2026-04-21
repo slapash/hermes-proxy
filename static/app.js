@@ -20,6 +20,7 @@
   const sessionLostBanner = document.getElementById('session-lost-banner');
   const sessionLostDismiss = document.getElementById('session-lost-dismiss');
   const logoutBtn = document.getElementById('logout-btn');
+  const searchInput = document.getElementById('search-input');
 
   // ── Utilities ──
   function closeSidebar() {
@@ -47,8 +48,12 @@
 
   // Auto-resize textarea
   msgInput.addEventListener('input', () => {
+    // Capture scroll state before layout changes
+    const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 10;
     msgInput.style.height = 'auto';
     msgInput.style.height = Math.min(msgInput.scrollHeight, 200) + 'px';
+    // Restore bottom-pinned position after reflow
+    if (atBottom) thread.scrollTop = thread.scrollHeight;
   });
 
   // Enter = send, Shift+Enter = newline
@@ -143,11 +148,16 @@
       const res = await fetch('/api/sessions');
       if (!res.ok) return;
       const sessions = await res.json();
-      renderSessions(sessions);
+      // Don't overwrite active search results
+      if (!searchInput.value.trim()) {
+        renderSessions(sessions);
+      }
+      // Always update the active highlight (works on whatever is currently in the list)
+      updateActiveSession();
     } catch {}
   }
 
-  function renderSessions(sessions) {
+  function renderSessions(sessions, searchMode = false) {
     sessionList.innerHTML = '';
     for (const s of sessions) {
       const el = document.createElement('div');
@@ -156,17 +166,65 @@
       const title = s.title || s.id.slice(0, 16) + '…';
       el.innerHTML = `<div class="session-title">${esc(title)}</div>
         <div class="session-date">${esc(formatDate(s.started_at))}</div>`;
-      el.addEventListener('click', () => loadSession(s.id));
+      if (searchMode && s.match_snippet) {
+        el.innerHTML += `<div class="session-snippet">${esc(s.match_snippet)}</div>`;
+      }
+      el.addEventListener('click', () => {
+        const anchor = searchMode ? (s.match_offset || null) : null;
+        loadSession(s.id, anchor);
+        if (searchMode) {
+          searchInput.value = '';
+          loadSessions();
+        }
+      });
       sessionList.appendChild(el);
     }
     sessionList.scrollTop = 0;
   }
 
-  async function loadSession(id) {
+  function _addOptimisticSession(firstMsg) {
+    // Remove any existing optimistic entry first
+    const existing = document.getElementById('optimistic-session');
+    if (existing) existing.remove();
+
+    const el = document.createElement('div');
+    el.id = 'optimistic-session';
+    el.className = 'session-item active';
+    el.innerHTML = `<div class="session-title">${esc(firstMsg.slice(0, 72))}</div>
+      <div class="session-date">Just now</div>`;
+    sessionList.prepend(el);
+    sessionList.scrollTop = 0;
+  }
+
+  // ── Search ──
+  let _searchTimer = null;
+  function _onSearchInput() {
+    clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(async () => {
+      const q = searchInput.value.trim();
+      if (!q) {
+        loadSessions();
+        return;
+      }
+      try {
+        const res = await fetch(`/api/sessions/search?q=${encodeURIComponent(q)}`);
+        if (!res.ok) return;
+        const sessions = await res.json();
+        renderSessions(sessions, true);
+      } catch {}
+    }, 300);
+  }
+  searchInput.addEventListener('input', _onSearchInput);
+  searchInput.addEventListener('search', _onSearchInput);
+
+  async function loadSession(id, anchorTs = null) {
     currentSessionId = id;
     dismissSessionLostBanner();
     closeSidebar();
     updateActiveSession();
+    // Reset any iOS zoom that may have been triggered by the search input
+    const mv = document.querySelector('meta[name=viewport]');
+    if (mv) mv.content = 'width=device-width, initial-scale=1.0, viewport-fit=cover';
     thread.innerHTML = '';
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages`);
@@ -176,6 +234,12 @@
         appendMessage(m.role, m.content, m.timestamp);
       }
       scrollToBottom();
+      if (anchorTs) {
+        const target = thread.querySelector(`[data-ts-raw="${anchorTs}"]`);
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }
     } catch {}
   }
 
@@ -196,6 +260,33 @@
   });
 
   // ── Message rendering ──
+  function _attachCopyButtons(bubble) {
+    bubble.querySelectorAll('pre').forEach(pre => {
+      // Don't double-add if already present
+      if (pre.querySelector('.copy-btn')) return;
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'Copy';
+      btn.addEventListener('click', async () => {
+        const code = pre.querySelector('code');
+        const text = code ? code.innerText : pre.innerText;
+        try {
+          await navigator.clipboard.writeText(text);
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(() => {
+            btn.textContent = 'Copy';
+            btn.classList.remove('copied');
+          }, 2000);
+        } catch {
+          btn.textContent = 'Error';
+          setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+        }
+      });
+      pre.appendChild(btn);
+    });
+  }
+
   function esc(str) {
     return String(str)
       .replace(/&/g, '&amp;')
@@ -224,10 +315,14 @@
     bubble.className = 'bubble';
     if (role === 'assistant') {
       bubble.innerHTML = content ? DOMPurify.sanitize(marked.parse(content)) : '';
+      _attachCopyButtons(bubble);
     } else {
       bubble.textContent = content || '';
     }
-    if (ts) bubble.dataset.ts = formatTime(ts);
+    if (ts) {
+      bubble.dataset.ts = formatTime(ts);
+      bubble.dataset.tsRaw = ts;  // raw value for anchor lookup
+    }
     msg.appendChild(bubble);
     thread.appendChild(msg);
     scrollToBottom();
@@ -266,6 +361,10 @@
     msgInput.style.height = 'auto';
     dismissSessionLostBanner();
 
+    // Optimistic session entry for new sessions — replaced by loadSessions() at stream end
+    if (!currentSessionId && !searchInput.value.trim()) {
+      _addOptimisticSession(text);
+    }
     appendMessage('user', text, Date.now());
     showThinking();
 
@@ -375,6 +474,7 @@
       // Final render (ensure complete markdown)
       if (assistantBubble && assistantContent) {
         assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
+        _attachCopyButtons(assistantBubble);
       }
 
       // Refresh sessions after first message in new session

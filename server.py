@@ -37,6 +37,10 @@ _HERMES_PROXY_PASSWORD = os.environ.get("HERMES_PROXY_PASSWORD", "")
 _API_SERVER_KEY = os.environ.get("API_SERVER_KEY", "")
 _API_SERVER_URL = os.environ.get("API_SERVER_URL", "http://127.0.0.1:8642")
 _STATE_DB_PATH = os.environ.get("STATE_DB_PATH", str(Path.home() / ".hermes" / "state.db"))
+_PROXY_META_DB_PATH = os.environ.get(
+    "PROXY_META_DB_PATH",
+    str(Path.home() / ".hermes" / "proxy_meta.db")
+)
 _SIGNING_KEY_HEX = os.environ.get("HERMES_PROXY_SIGNING_KEY", "")
 
 if not _HERMES_PROXY_PASSWORD:
@@ -52,6 +56,20 @@ except ValueError:
     raise RuntimeError("HERMES_PROXY_SIGNING_KEY must be a valid hex string")
 if len(_SIGNING_KEY) < 32:
     raise RuntimeError("HERMES_PROXY_SIGNING_KEY must be at least 32 bytes (64 hex chars)")
+
+
+def _init_proxy_meta_db() -> None:
+    with sqlite3.connect(_PROXY_META_DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_meta (
+                session_id TEXT PRIMARY KEY,
+                custom_name TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        conn.commit()
+
+_init_proxy_meta_db()
 
 # ---------------------------------------------------------------------------
 # In-memory state
@@ -367,9 +385,84 @@ async def api_sessions(request: Request) -> Response:
                 if not r.get("title") and first_msg:
                     r["title"] = first_msg[:72].strip()
                 rows.append(r)
+        # Overlay custom names from proxy_meta.db
+        try:
+            with sqlite3.connect(_PROXY_META_DB_PATH, timeout=5) as pmconn:
+                pmconn.row_factory = sqlite3.Row
+                pmcur = pmconn.cursor()
+                pmcur.execute("SELECT session_id, custom_name FROM session_meta")
+                custom_names = {r["session_id"]: r["custom_name"] for r in pmcur.fetchall()}
+            for r in rows:
+                if r["id"] in custom_names:
+                    r["title"] = custom_names[r["id"]]
+        except Exception as exc:
+            logger.warning("proxy_meta.db read failed (non-fatal): %s", exc)
         return JSONResponse(rows)
     except Exception as exc:
         logger.error("DB error in api_sessions: %s", exc)
+        return JSONResponse({"error": "Internal server error"}, status_code=500)
+
+
+@app.get("/api/sessions/search")
+async def api_sessions_search(q: str, request: Request) -> Response:
+    if not _is_authenticated(request):
+        return _auth_error()
+    q = (q or "").strip()
+    if not q:
+        return JSONResponse({"error": "q is required"}, status_code=400)
+    try:
+        with sqlite3.connect(_STATE_DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT s.id, s.title, s.started_at, s.ended_at, s.message_count, s.model,
+                       m.timestamp AS match_offset,
+                       m.content AS match_content,
+                       (SELECT m2.content FROM messages m2
+                        WHERE m2.session_id = s.id AND m2.role = 'user'
+                        ORDER BY m2.timestamp ASC LIMIT 1) AS first_msg
+                FROM messages_fts fts
+                JOIN messages m ON m.rowid = fts.rowid
+                JOIN sessions s ON s.id = m.session_id
+                WHERE messages_fts MATCH ?
+                  AND s.source = 'api_server'
+                  AND m.role IN ('user', 'assistant')
+                  AND m.content IS NOT NULL AND m.content != ''
+                GROUP BY s.id
+                ORDER BY s.started_at DESC
+                LIMIT 20
+                """,
+                (q,),
+            )
+            rows = []
+            for row in cur.fetchall():
+                r = dict(row)
+                first_msg = r.pop("first_msg", None) or ""
+                match_content = r.pop("match_content", "") or ""
+                if first_msg.startswith("### Task:"):
+                    continue
+                if not r.get("title") and first_msg:
+                    r["title"] = first_msg[:72].strip()
+                snippet = match_content.replace("\n", " ").strip()
+                snippet = snippet[:80] + ("…" if len(snippet) > 80 else "")
+                r["match_snippet"] = snippet
+                rows.append(r)
+        # Overlay custom names
+        try:
+            with sqlite3.connect(_PROXY_META_DB_PATH, timeout=5) as pmconn:
+                pmconn.row_factory = sqlite3.Row
+                pmcur = pmconn.cursor()
+                pmcur.execute("SELECT session_id, custom_name FROM session_meta")
+                custom_names = {r2["session_id"]: r2["custom_name"] for r2 in pmcur.fetchall()}
+            for r in rows:
+                if r["id"] in custom_names:
+                    r["title"] = custom_names[r["id"]]
+        except Exception as exc:
+            logger.warning("proxy_meta.db overlay failed (non-fatal): %s", exc)
+        return JSONResponse(rows)
+    except Exception as exc:
+        logger.error("Search error: %s", exc)
         return JSONResponse({"error": "Internal server error"}, status_code=500)
 
 
@@ -393,6 +486,36 @@ async def api_session_messages(session_id: str, request: Request) -> Response:
         return JSONResponse(rows)
     except Exception as exc:
         logger.error("DB error in api_session_messages: %s", exc)
+        return JSONResponse({"error": "Internal server error"}, status_code=500)
+
+
+@app.put("/api/sessions/{session_id}/rename")
+async def api_session_rename(session_id: str, request: Request) -> Response:
+    if not _is_authenticated(request):
+        return _auth_error()
+    if not _SESSION_ID_RE.match(session_id):
+        return JSONResponse({"error": "Invalid session_id"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    name = (body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    if len(name) > 100:
+        return JSONResponse({"error": "name too long (max 100 chars)"}, status_code=400)
+    try:
+        with sqlite3.connect(_PROXY_META_DB_PATH, timeout=5) as conn:
+            conn.execute(
+                "INSERT INTO session_meta (session_id, custom_name, updated_at) "
+                "VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET "
+                "custom_name=excluded.custom_name, updated_at=excluded.updated_at",
+                (session_id, name, time.time()),
+            )
+            conn.commit()
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        logger.error("DB error in api_session_rename: %s", exc)
         return JSONResponse({"error": "Internal server error"}, status_code=500)
 
 

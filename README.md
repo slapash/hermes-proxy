@@ -15,6 +15,8 @@ Feel free to submit any questions, PRs or features - this is a first pass, but I
 - Rate-limited login (5 attempts per 60 seconds)
 - SSE streaming with live markdown rendering
 - Session sidebar — browse and resume past conversations from `state.db`
+- Session search — full-text search across conversation history with match snippets and scroll-to-match anchoring
+- Session rename — double-click any session title in the sidebar to give it a custom name
 - Session continuity across page reloads via `localStorage`
 - Session-lost detection — banner prompts if the server restarted and the session mapping was cleared
 - Mobile-friendly layout (iOS safe-area, zoom-on-focus fix, slide-out sidebar)
@@ -68,11 +70,13 @@ cp .env.example .env
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `HERMES_PROXY_PASSWORD` | Yes | — | Password for the web UI login screen |
+| `HERMES_PROXY_SIGNING_KEY` | Yes | — | 64-char hex string used to sign auth cookies. Generate with: `python3 -c "import secrets; print(secrets.token_hex(32))"` |
 | `API_SERVER_KEY` | Yes | — | Bearer token for the Hermes `api_server` platform |
 | `API_SERVER_URL` | No | `http://127.0.0.1:8642` | URL of the Hermes `api_server` |
-| `STATE_DB_PATH` | No | `~/.hermes/state.db` | Path to the Hermes SQLite state database |
+| `STATE_DB_PATH` | No | `~/.hermes/state.db` | Path to the Hermes SQLite state database (read-only) |
+| `PROXY_META_DB_PATH` | No | `~/.hermes/proxy_meta.db` | Path to the proxy-owned metadata database (session renames) |
 
-**Important:** choose a strong `HERMES_PROXY_PASSWORD`. Rotating it invalidates all existing login cookies automatically (tokens are HMAC-signed against the password).
+**Important:** `HERMES_PROXY_PASSWORD` and `HERMES_PROXY_SIGNING_KEY` are independent. Rotating the password does not invalidate existing cookies. Rotating the signing key invalidates all cookies immediately — all users must re-login.
 
 ---
 
@@ -174,9 +178,10 @@ This makes the proxy available at `https://<machine-name>.<tailnet>.ts.net` with
 ## Security Notes
 
 ### Password strength
-`HERMES_PROXY_PASSWORD` is used to derive the cookie signing key via PBKDF2 (100,000 iterations). Choose a strong password — this is your only authentication factor. Rotating it invalidates all existing login cookies automatically (users re-login once).
+Choose a strong `HERMES_PROXY_PASSWORD`. It is compared using a constant-time digest to prevent timing attacks, but strength is still your first line of defense.
 
-Note: PBKDF2 key derivation adds ~100ms to startup time. This is expected and intentional.
+### Signing key
+`HERMES_PROXY_SIGNING_KEY` is a random 256-bit key that signs all auth cookies. It is independent of the password — rotating one does not affect the other. Store it in `.env` and keep it secret. Losing it logs everyone out; leaking it lets anyone forge cookies.
 
 ### Session trust boundary
 hermes-proxy is designed as a single-user tool. An authenticated user can point the proxy at any Hermes session ID in the database. If you expose this to multiple users, add per-user session isolation before deploying.
@@ -205,19 +210,44 @@ Browser
   │  HTTPS (cookie auth)
   ▼
 hermes-proxy (:8643)
-  │  Bearer token  │  SQLite read
-  ▼                ▼
-api_server    state.db
-  (:8642)     (~/.hermes/state.db)
+  │  Bearer token  │  SQLite read    │  SQLite read/write
+  ▼                ▼                 ▼
+api_server    state.db          proxy_meta.db
+  (:8642)     (~/.hermes/       (~/.hermes/
+              state.db)          proxy_meta.db)
   │
   ▼
 Hermes Agent
 ```
 
-- **Auth layer:** HMAC-signed cookies derived from `HERMES_PROXY_PASSWORD`. No server-side token store — cookies are stateless and self-verifying. Rotating the password invalidates all cookies.
+- **Auth layer:** HMAC-signed cookies keyed by `HERMES_PROXY_SIGNING_KEY`. Stateless — no server-side token store. Rotating the signing key invalidates all cookies.
 - **Session mapping:** The proxy maintains an in-memory map of browser cookie → Hermes session ID. This is intentionally not persisted — on restart, the session-lost banner prompts you to pick a session from the sidebar.
 - **Session sidebar:** Reads directly from `state.db` (read-only). Displays the 50 most recent `api_server` sessions with titles derived from the first user message.
+- **Session search:** Queries the FTS5 index in `state.db` (read-only). Returns up to 20 matching sessions with a text snippet and the timestamp of the first matching message for scroll anchoring.
+- **Session rename:** Writes custom names to `proxy_meta.db` (proxy-owned). Overlaid on top of auto-generated titles at read time — `state.db` is never modified.
 - **SSE streaming:** The proxy streams responses from `api_server` verbatim, injecting a synthetic `event: session` frame at the end of each stream to relay the Hermes session ID to the browser.
+
+---
+
+## Session search
+
+Type in the search box above the session list to search across all conversation history. Results show a snippet of the matching text and are click-to-load — the conversation opens and scrolls directly to the first matching message.
+
+Search uses SQLite FTS5 full-text indexing on the Hermes `state.db` messages table. A few syntax notes:
+
+- **Full tokens only by default** — searching `meali` will not match `mealie`. Use a trailing `*` for prefix matching: `mealie*` or `recipe*`.
+- **Phrase search** — wrap in quotes: `"batch import"` matches that exact phrase.
+- **AND is implicit** — `mealie import` matches sessions containing both words (not necessarily adjacent).
+- **OR** — `mealie OR recipe` matches either term.
+- **Exclusion** — `mealie NOT import` matches sessions with `mealie` but not `import`.
+
+If the search index is unavailable (e.g. a very old Hermes install without FTS5 enabled), the endpoint returns a 500 and logs the error — the rest of the UI is unaffected.
+
+---
+
+## Session rename
+
+Double-click any session title in the sidebar to rename it. Type a new name and press Enter (or click away) to save. Press Escape to cancel. Custom names are stored in `proxy_meta.db` (separate from the Hermes `state.db`) and persist across proxy restarts.
 
 ---
 
