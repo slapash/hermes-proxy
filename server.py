@@ -537,32 +537,70 @@ async def api_session_rename(session_id: str, request: Request) -> Response:
 _STATIC_DIR = Path(__file__).parent / "static"
 _STATIC_DIR.mkdir(exist_ok=True)
 
-# Plugin directory for local plugin scripts
-_PLUGINS_DIR = _STATIC_DIR / "__plugins__"
-_PLUGINS_DIR.mkdir(exist_ok=True)
+"""Secure plugin loader — path-traversal and symlink protection."""
+_MAX_PLUGIN_SIZE = 10 * 1024 * 1024  # 10 MiB
 
-# Loaded at import time — reads HERMES_PROXY_PLUGIN_0, _1, _2, ...
-_plugin_scripts = []
-for _i in range(10):
-    _val = os.environ.get(f"HERMES_PROXY_PLUGIN_{_i}", "").strip()
-    if not _val:
-        continue
-    if _val.startswith("local:"):
-        _fp = Path(_val[6:])
-        if _fp.is_file():
-            _dest = _PLUGINS_DIR / f"{_i}_{_fp.name}"
-            # symlink or copy — copy avoids broken links on restart
+
+def _load_plugins(plugin_dir: Path) -> tuple[list[str], list[str]]:
+    """Resolve HERMES_PROXY_PLUGIN_* env vars into safe server-side paths.
+    Returns (scripts, errors)."""
+    safe_root = plugin_dir.resolve()
+    scripts: list[str] = []
+    errors: list[str] = []
+    for i in range(10):
+        val = os.environ.get(f"HERMES_PROXY_PLUGIN_{i}", "").strip()
+        if not val:
+            continue
+        if val.startswith("local:"):
+            raw = val[6:]
+            # Block path traversal attempts
+            if ".." in raw or "\x00" in raw:
+                errors.append(f"Plugin {i} path traversal blocked: {raw!r}")
+                continue
+            fp = Path(raw).expanduser()
+            if not fp.is_file():
+                errors.append(f"Plugin {i} local path not found: {raw}")
+                continue
             try:
-                _dest.write_bytes(_fp.read_bytes())
-                _plugin_scripts.append(f"/static/__plugins__/{_dest.name}")
-            except OSError:
-                pass
+                real_fp = fp.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                errors.append(f"Plugin {i} symlink resolution failed ({exc}): {raw}")
+                continue
+            # If the original path is a symlink, ensure the resolved target
+            # does not escape the symlink's parent directory tree. This blocks
+            # symlink attacks where a link inside plugins/ points at /etc/passwd.
+            if fp.is_symlink():
+                link_parent = fp.parent.resolve()
+                if not str(real_fp).startswith(str(link_parent)):
+                    errors.append(f"Plugin {i} symlink escapes parent dir: {raw}")
+                    continue
+            # Size gate (TOCTOU — copy is next step, size may change, we accept best-effort)
+            try:
+                size = real_fp.stat().st_size
+            except OSError as exc:
+                errors.append(f"Plugin {i} stat failed ({exc}): {raw}")
+                continue
+            if size > _MAX_PLUGIN_SIZE:
+                errors.append(f"Plugin {i} file too large ({size:,} bytes, max {_MAX_PLUGIN_SIZE:,}): {raw}")
+                continue
+            dest = plugin_dir / f"{i}_{real_fp.name}"
+            try:
+                dest.write_bytes(real_fp.read_bytes())
+                scripts.append(f"/static/__plugins__/{dest.name}")
+            except OSError as exc:
+                errors.append(f"Plugin {i} copy failed: {exc}")
+        elif val.startswith("http://") or val.startswith("https://"):
+            scripts.append(val)
         else:
-            logger.warning("Plugin %d local path not found: %s", _i, _fp)
-    elif _val.startswith("http://") or _val.startswith("https://"):
-        _plugin_scripts.append(_val)
-    else:
-        logger.warning("Plugin %d invalid URL (must start with http://, https://, or local:): %s", _i, _val)
+            errors.append(f"Plugin {i} invalid URL (must start with http://, https://, or local:): {val}")
+    return scripts, errors
+
+
+_PLUGIN_DIR = _STATIC_DIR / "__plugins__"
+_PLUGIN_DIR.mkdir(exist_ok=True)
+_plugin_scripts, _plugin_errors = _load_plugins(_PLUGIN_DIR)
+for _err in _plugin_errors:
+    logger.warning(_err)
 
 
 def _inject_plugins(html: str) -> str:
