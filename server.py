@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, UploadFile, File
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -596,8 +596,82 @@ def _load_plugins(plugin_dir: Path) -> tuple[list[str], list[str]]:
     return scripts, errors
 
 
+# ---------------------------------------------------------------------------
+# Uploads directory for file attachments
+# ---------------------------------------------------------------------------
 _PLUGIN_DIR = _STATIC_DIR / "__plugins__"
 _PLUGIN_DIR.mkdir(exist_ok=True)
+_UPLOADS_DIR = Path(__file__).parent / "uploads"
+_UPLOADS_DIR.mkdir(exist_ok=True)
+_UPLOAD_MAX_SIZE = 5 * 1024 * 1024  # 5 MB
+_UPLOAD_WHITELIST = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+
+
+@app.post("/api/attachments")
+async def api_attachments(file: UploadFile = File(...)):
+    """Accept a single image upload and return markdown URL."""
+    if not file.content_type:
+        return JSONResponse({"error": "Missing Content-Type"}, status_code=400)
+    ct = file.content_type.lower()
+    if ct not in _UPLOAD_WHITELIST:
+        return JSONResponse({"error": f"File type not allowed: {ct}"}, status_code=400)
+    raw = await file.read()
+    if len(raw) > _UPLOAD_MAX_SIZE:
+        return JSONResponse({"error": f"File too large (max {_UPLOAD_MAX_SIZE // 1024 // 1024} MB)"}, status_code=400)
+    # Sanitize filename
+    orig = file.filename or "upload.bin"
+    name, dot, ext = orig.rpartition(".")
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in (name or "file"))
+    safe_ext = "".join(c for c in ext.lower() if c.isalnum())
+    final_name = f"{safe_name}_{int(time.time())}{dot}{safe_ext}" if safe_ext else f"{safe_name}_{int(time.time())}"
+    dest = _UPLOADS_DIR / final_name
+    try:
+        dest.write_bytes(raw)
+    except Exception as exc:
+        logger.error("Upload write failed: %s", exc)
+        return JSONResponse({"error": "Upload failed"}, status_code=500)
+    url = f"/uploads/{final_name}"
+    md = f"![{final_name}]({url})"
+    return JSONResponse({"url": url, "markdown": md})
+
+
+@app.get("/api/og")
+async def api_og(url: str):
+    """Fetch a URL and return Open Graph metadata."""
+    if not url or not (url.startswith("http://") or url.startswith("https://")):
+        return JSONResponse({"error": "URL must start with http:// or https://"}, status_code=400)
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            html = resp.text
+    except Exception as exc:
+        logger.warning("OG fetch failed: %s", exc)
+        return JSONResponse({"title": "", "description": "", "image": "", "url": url})
+
+    def _meta_tag(name, html_text):
+        for attr in [f'property="og:{name}"', f"property='og:{name}'", f'name="{name}"', f"name='{name}'"]:
+            pattern = re.compile(r'<meta[^>]+' + re.escape(attr) + r'[^>]+content=["\']([^"\']+)["\']', re.I)
+            m = pattern.search(html_text)
+            if m:
+                return m.group(1)
+            pattern2 = re.compile(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+' + re.escape(attr), re.I)
+            m2 = pattern2.search(html_text)
+            if m2:
+                return m2.group(1)
+        return ""
+
+    return JSONResponse({
+        "title": _meta_tag("title", html),
+        "description": _meta_tag("description", html),
+        "image": _meta_tag("image", html),
+        "url": url,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Static files + root
+# ---------------------------------------------------------------------------
 _plugin_scripts, _plugin_errors = _load_plugins(_PLUGIN_DIR)
 for _err in _plugin_errors:
     logger.warning(_err)
@@ -629,3 +703,4 @@ async def root(request: Request) -> Response:
 
 
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+app.mount("/uploads", StaticFiles(directory=str(_UPLOADS_DIR)), name="uploads")
