@@ -396,7 +396,10 @@
       (this._hooks[event] ||= []).push(fn);
     },
     emit(event, ...args) {
-      (this._hooks[event] || []).forEach(fn => fn(...args));
+      for (const fn of (this._hooks[event] || [])) {
+        try { fn(...args); }
+        catch (e) { console.error('Plugin error in', event, ':', e); }
+      }
     },
     registerTheme(name, colors) {
       this.emit('themeRegister', name, colors);

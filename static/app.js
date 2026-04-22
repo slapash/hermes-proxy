@@ -422,7 +422,11 @@
   async function sendMessage() {
     const text = msgInput.value.trim();
     if (!text || streaming) return;
-    window.HermesProxy && window.HermesProxy.emit('beforeSend', text);
+    try {
+      window.HermesProxy && window.HermesProxy.emit('beforeSend', text);
+    } catch (e) {
+      console.error('Plugin error in beforeSend:', e);
+    }
 
     streaming = true;
     sendBtn.disabled = true;
