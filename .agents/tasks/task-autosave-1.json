@@ -1,0 +1,26 @@
+{
+  "task_id": "task-autosave-1",
+  "phase": "plugin-draft-autosave",
+  "plugin": "draft-autosave",
+  "type": "plugin",
+  "spec_version": "1.0",
+  "depends_on": ["task-linkify-1"],
+  "goal": "Create plugins/draft-autosave.js that saves msgInput.value to localStorage every 2s (debounced)",
+  "sub_tasks": [
+    "T1: Create IIFE skeleton with __DraftAutosaveInited guard",
+    "T2: Add msgInput.addEventListener('input', debounce(saveFn, 2000))",
+    "T3: saveFn: determine key = sessionId ? 'hermes-draft:'+sessionId : 'hermes-draft:global'",
+    "T4: saveFn: if text is empty, removeItem, else setItem with try/catch guard",
+    "T5: On page load (plugin init): read from localStorage and set msgInput.value if present",
+    "T6: Subscribe to HermesProxy.on('sessionChanged', id) to read stored draft for new session"
+  ],
+  "guard_focus": [
+    "Does it save to localStorage debounced (not on every keystroke)?",
+    "Is localStorage access wrapped in try/catch?",
+    "Does the key include sessionId (per-session drafts)?",
+    "Is empty draft removed from storage?",
+    "On session change, does it load the saved draft?",
+    "Does it avoid overwriting the input with stale drafts after user sends?"
+  ],
+  "notes": "~40 lines. No server changes. Uses beforeSend hook from core or we can just not clear on send for now."
+}

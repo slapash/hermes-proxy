@@ -1,0 +1,20 @@
+{
+  "task_id": "core-hooks-a",
+  "phase": "core-hooks",
+  "plugin": "",
+  "type": "core",
+  "spec_version": "1.0",
+  "depends_on": [],
+  "goal": "Add HermesProxy.emit('sessionListRendered', containerEl) after the session list DOM is built in loadSessions()",
+  "details": {
+    "file": "static/app.js",
+    "location": "Inside loadSessions() function, after all session items are appended to the DOM",
+    "code": "if (window.HermesProxy) window.HermesProxy.emit('sessionListRendered', sessionList);",
+    "notes": "Must be after the DOM is fully populated but before the function returns. The containerEl is the #session-list element."
+  },
+  "guard_focus": [
+    "Does emit fire on every loadSessions call?",
+    "Is the DOM fully populated when emit fires?",
+    "Does it use HermesProxy.emit with try/catch wrapper already present in the codebase?"
+  ]
+}

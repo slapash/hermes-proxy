@@ -1,0 +1,28 @@
+{
+  "task_id": "task-filedrop-1",
+  "phase": "plugin-file-drop-zone",
+  "plugin": "file-drop-zone",
+  "type": "plugin",
+  "spec_version": "1.0",
+  "depends_on": ["task-imgpaste-2"],
+  "goal": "Create plugins/file-drop-zone.js for drag-and-drop file upload overlay",
+  "sub_tasks": [
+    "T1: Create IIFE skeleton with __FileDropZoneInited guard",
+    "T2: Add dragenter/dragover listeners on document to show overlay div (opacity transition, 'Drop files here' text)",
+    "T3: Add dragleave listener to hide overlay when leaving document body",
+    "T4: Add drop listener: preventDefault(), stopPropagation(), hide overlay",
+    "T5: Iterate e.dataTransfer.files, create FormData, POST /api/attachments",
+    "T6: On success: for each response, insert markdown link into msgInput.value at cursor position",
+    "T7: Support multiple files in one drop",
+    "T8: Add CSS overlay styles inline or use existing vars for overlay background/text"
+  ],
+  "guard_focus": [
+    "Does drag-over show visual overlay?",
+    "Does drop call preventDefault (prevents browser from opening file)?",
+    "Does it support multiple files at once?",
+    "Are uploaded file links inserted at cursor position?",
+    "Does dragleave properly hide overlay (consider dragleave from child elements)?",
+    "Is init guard present?"
+  ],
+  "notes": "~60 lines. Very similar to image-paste but for drag-and-drop. Can reuse some logic."
+}

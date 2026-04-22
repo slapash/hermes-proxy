@@ -1,0 +1,28 @@
+{
+  "task_id": "task-linkify-1",
+  "phase": "plugin-auto-linkifier",
+  "plugin": "auto-linkifier",
+  "type": "plugin",
+  "spec_version": "1.0",
+  "depends_on": ["core-hooks-b"],
+  "goal": "Create plugins/auto-linkifier.js that turns bare URLs in messages into clickable links",
+  "sub_tasks": [
+    "T1: Create IIFE skeleton with __AutoLinkifierInited guard, PLUGIN_NAME, safe() helper",
+    "T2: Subscribe to HermesProxy.on('messageRendered', ...)",
+    "T3: In handler: scan bubble for bare URLs using regex /https?:\\/\\/[^\\s\\)\]>]+/g",
+    "T4: Skip URLs inside <a>, <pre>, <code>, or if parent already is <a>",
+    "T5: Wrap bare URL in <a target='_blank' rel='noopener'> using textContent for label, href=URL",
+    "T6: Append link after the text node (replace text node with [text_before, link, text_after])",
+    "T7: Edge case: trailing punctuation (. , ) >) should NOT be in href but kept outside",
+    "T8: Test: no eval, no innerHTML, idempotent (reload plugin doesn't double link)"
+  ],
+  "guard_focus": [
+    "Does it only wrap BARE URLs (not inside existing <a> tags)?",
+    "Are URLs inside <pre>/<code> left untouched?",
+    "Is href safe (uses textContent for display, href attribute for URL)?",
+    "Is trailing punctuation stripped from the link but kept in visible text?",
+    "Is the init guard present and working?",
+    "No eval, Function, innerHTML with untrusted data"
+  ],
+  "notes": "This plugin is ~40 lines. Target file: plugins/auto-linkifier.js. It modifies the DOM of existing messages only — no server changes."
+}

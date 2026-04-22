@@ -1,0 +1,27 @@
+{
+  "task_id": "task-export-1",
+  "phase": "plugin-export-chat-md",
+  "plugin": "export-chat-md",
+  "type": "plugin",
+  "spec_version": "1.0",
+  "depends_on": ["task-fav-1"],
+  "goal": "Create plugins/export-chat-md.js with export button and markdown download",
+  "sub_tasks": [
+    "T1: Create IIFE skeleton with __ExportChatMdInited guard",
+    "T2: Find the header (#topbar or .sidebar-header) and append an 'Export' button",
+    "T3: Button click: if no currentSessionId, alert('Select a session'); return",
+    "T4: Fetch /api/messages/{currentSessionId}",
+    "T5: Build markdown string with metadata header + messages formatted as '**User**: text\\n\\n**Assistant**: text\\n\\n'",
+    "T6: Strip HTML from assistant messages (use temporary div + textContent)",
+    "T7: Create Blob, download via anchor element with .md filename including session name or date"
+  ],
+  "guard_focus": [
+    "Does button appear in the UI?",
+    "Does clicking without session show a helpful message (not crash)?",
+    "Does generated markdown contain all messages?",
+    "Is HTML stripped from assistant content?",
+    "Is the download triggered with a .md filename?",
+    "Is init guard present?"
+  ],
+  "notes": "~40 lines. Pure frontend. Uses existing /api/messages endpoint."
+}

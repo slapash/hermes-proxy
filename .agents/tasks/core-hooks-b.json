@@ -1,0 +1,20 @@
+{
+  "task_id": "core-hooks-b",
+  "phase": "core-hooks",
+  "plugin": "",
+  "type": "core",
+  "spec_version": "1.0",
+  "depends_on": ["core-hooks-a"],
+  "goal": "Add HermesProxy.emit('sessionChanged', id) inside loadMessages(id) so plugins know when user switches sessions",
+  "details": {
+    "file": "static/app.js",
+    "location": "Inside loadMessages(sessionId) function, at the top or after fetching messages",
+    "code": "if (window.HermesProxy) window.HermesProxy.emit('sessionChanged', currentSessionId);",
+    "notes": "loadMessages is called when a session is clicked. Use currentSessionId (already set to the new id)."
+  },
+  "guard_focus": [
+    "Does emit fire with a valid sessionId string?",
+    "Does it fire BEFORE or AFTER messages are loaded (spec says before is fine, but AFTER is better)?",
+    "Is there any case where loadMessages is called with null/undefined?"
+  ]
+}

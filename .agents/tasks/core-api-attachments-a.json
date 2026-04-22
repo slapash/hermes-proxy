@@ -1,0 +1,31 @@
+{
+  "task_id": "core-api-attachments-a",
+  "phase": "core-api-attachments",
+  "plugin": "",
+  "type": "core",
+  "spec_version": "1.0",
+  "depends_on": ["core-api-og-a"],
+  "goal": "Add POST /api/attachments endpoint to server.py for image file uploads",
+  "details": {
+    "file": "server.py",
+    "location": "Add new FastAPI route near other API endpoints",
+    "requirements": [
+      "Accept multipart/form-data (UploadFile from fastapi)",
+      "Whitelist: image/jpeg, image/png, image/gif, image/webp",
+      "Max file size: 5MB (5 * 1024 * 1024)",
+      "Sanitize filename: replace non-alphanumeric with _, lowercase extension",
+      "Save to uploads/ directory (create at startup: Path('uploads').mkdir(exist_ok=True))",
+      "Return JSON: {url: '/uploads/<filename>', markdown: '![filename](/uploads/<filename>)' or '...' for images}",
+      "Also serve /uploads as static files (app.mount('/uploads', StaticFiles(...)))",
+      "Return 400 for disallowed types or oversized files"
+    ],
+    "notes": "Use uploadfile.content_type for validation. Check file.size BEFORE saving. Use datetime.now().timestamp() + sanitized_name for uniqueness."
+  },
+  "guard_focus": [
+    "Does the endpoint verify content_type against whitelist?",
+    "Is max file size checked before writing to disk?",
+    "Is filename sanitized (no path traversal)?",
+    "Are uploaded files served from /uploads correctly?",
+    "Is the uploads directory created at import time?"
+  ]
+}

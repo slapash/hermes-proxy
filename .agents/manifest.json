@@ -1,0 +1,108 @@
+{
+  "version": "1.0.0",
+  "branch": "feature/plugins-suite",
+  "project_root": "/home/hermes/apps/hermes-proxy",
+  "plugins_dir": "/home/hermes/apps/hermes-proxy/plugins",
+  "knowledge_dir": "/home/hermes/apps/hermes-proxy/.agents/knowledge",
+  "scores_dir": "/home/hermes/apps/hermes-proxy/.agents/scores",
+  "tasks_dir": "/home/hermes/apps/hermes-proxy/.agents/tasks",
+  "logs_dir": "/home/hermes/apps/hermes-proxy/.agents/logs",
+  "guard_enabled": true,
+  "coder_score": 0,
+  "coder_score_max": 100,
+  "coder_bonus_per_pass": 5,
+  "coder_penalty_per_fail": -3,
+  "guard_threshold": 20,
+  "guard_bypass_threshold": 60,
+  "max_guard_attempts": 2,
+  "auto_commit": true,
+  "commit_prefix": "[plugin]",
+  "scoring": {
+    "dimensions": [
+      {"name": "spec_compliance", "weight": 0.30, "description": "Does the code do exactly what the spec says?"},
+      {"name": "edge_cases", "weight": 0.20, "description": "Are edge cases from spec handled?"},
+      {"name": "security", "weight": 0.20, "description": "No eval, no innerHTML from untrusted data, no XSS vectors."},
+      {"name": "robustness", "weight": 0.15, "description": "try/catch guards, null checks, idempotent init, localStorage guards."},
+      {"name": "code_quality", "weight": 0.15, "description": "Variable names, readability, comments, structure."}
+    ]
+  },
+  "phases": [
+    {
+      "id": "core-hooks",
+      "name": "Core: app.js hooks",
+      "done": false,
+      "commit": "[core] add sessionListRendered + sessionChanged hooks",
+      "tasks": ["core-hooks-a", "core-hooks-b"]
+    },
+    {
+      "id": "core-api-og",
+      "name": "Core: /api/og endpoint",
+      "done": false,
+      "commit": "[core] add /api/og open-graph proxy endpoint",
+      "tasks": ["core-api-og-a"]
+    },
+    {
+      "id": "core-api-attachments",
+      "name": "Core: /api/attachments endpoint",
+      "done": false,
+      "commit": "[core] add /api/attachments multipart endpoint",
+      "tasks": ["core-api-attachments-a"]
+    },
+    {
+      "id": "plugin-auto-linkifier",
+      "name": "Plugin: auto-linkifier",
+      "done": false,
+      "commit": "[plugin] auto-linkifier: linkify bare URLs in messages",
+      "tasks": ["task-linkify-1"]
+    },
+    {
+      "id": "plugin-draft-autosave",
+      "name": "Plugin: draft-autosave",
+      "done": false,
+      "commit": "[plugin] draft-autosave: per-session draft persistence",
+      "tasks": ["task-autosave-1", "task-autosave-2"]
+    },
+    {
+      "id": "plugin-slash-commands",
+      "name": "Plugin: slash-commands",
+      "done": false,
+      "commit": "[plugin] slash-commands: autocomplete /new /clear /search /theme /help",
+      "tasks": ["task-slash-1", "task-slash-2"]
+    },
+    {
+      "id": "plugin-session-favorites",
+      "name": "Plugin: session-favorites",
+      "done": false,
+      "commit": "[plugin] session-favorites: star + pin sessions",
+      "tasks": ["task-fav-1"]
+    },
+    {
+      "id": "plugin-export-chat-md",
+      "name": "Plugin: export-chat-md",
+      "done": false,
+      "commit": "[plugin] export-chat-md: download session as markdown",
+      "tasks": ["task-export-1"]
+    },
+    {
+      "id": "plugin-open-graph-card",
+      "name": "Plugin: open-graph-card",
+      "done": false,
+      "commit": "[plugin] open-graph-card: rich link previews",
+      "tasks": ["task-ogcard-1"]
+    },
+    {
+      "id": "plugin-image-paste-preview",
+      "name": "Plugin: image-paste-preview",
+      "done": false,
+      "commit": "[plugin] image-paste-preview: drag-and-drop + paste image upload",
+      "tasks": ["task-imgpaste-1", "task-imgpaste-2"]
+    },
+    {
+      "id": "plugin-file-drop-zone",
+      "name": "Plugin: file-drop-zone",
+      "done": false,
+      "commit": "[plugin] file-drop-zone: drag & drop file upload",
+      "tasks": ["task-filedrop-1"]
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "task_id": "task-imgpaste-2",
+  "phase": "plugin-image-paste-preview",
+  "plugin": "image-paste-preview",
+  "type": "plugin",
+  "spec_version": "1.0",
+  "depends_on": ["task-imgpaste-1"],
+  "goal": "Extend image-paste-preview to upload images on send and insert markdown links",
+  "sub_tasks": [
+    "T1: Intercept the send flow — subscribe to HermesProxy.on('beforeSend', async (text) => ...)",
+    "T2: If pendingImages is empty, return (let normal send proceed)",
+    "T3: Create a FormData, append each pending image blob with key 'files'",
+    "T4: POST /api/attachments with form data",
+    "T5: On success: collect markdown strings from response, prepend to message text, clear pendingImages, update preview strip",
+    "T6: On error: show toast/error, DO NOT clear queue (let user retry)",
+    "T7: After upload succeeds, call msgInput.value = '' and trigger input event for auto-resize"
+  ],
+  "guard_focus": [
+    "Does beforeSend intercept trigger ONLY when pendingImages > 0?",
+    "Does it upload via multipart POST?",
+    "Is markdown prepended to user text so images appear first?",
+    "On success, is queue cleared?",
+    "On error, is queue preserved for retry?",
+    "Is there visual feedback during upload (spinner)?"
+  ],
+  "notes": "~50 additional lines. Builds on task-imgpaste-1. Handles the upload + markdown insertion."
+}

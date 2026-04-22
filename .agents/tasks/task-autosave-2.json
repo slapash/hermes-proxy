@@ -1,0 +1,22 @@
+{
+  "task_id": "task-autosave-2",
+  "phase": "plugin-draft-autosave",
+  "plugin": "draft-autosave",
+  "type": "plugin",
+  "spec_version": "1.0",
+  "depends_on": ["task-autosave-1"],
+  "goal": "Add 'Draft saved' UI indicator to draft-autosave.js and clear draft on send",
+  "sub_tasks": [
+    "T1: Add small status indicator element near msgInput (opacity 0 by default)",
+    "T2: Show indicator briefly (1.5s) after successful save with a CSS transition",
+    "T3: Subscribe to HermesProxy.on('beforeSend', ...) to removeItem the draft for current session",
+    "T4: After clearing draft, hide indicator immediately"
+  ],
+  "guard_focus": [
+    "Does indicator show after save completes?",
+    "Does indicator auto-hide after 1.5s?",
+    "Does beforeSend correctly remove the draft for current session?",
+    "Is the indicator non-intrusive (small, subtle)?"
+  ],
+  "notes": "~15-20 additional lines. Builds on task-autosave-1."
+}

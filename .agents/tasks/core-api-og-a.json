@@ -1,0 +1,29 @@
+{
+  "task_id": "core-api-og-a",
+  "phase": "core-api-og",
+  "plugin": "",
+  "type": "core",
+  "spec_version": "1.0",
+  "depends_on": ["core-hooks-b"],
+  "goal": "Add GET /api/og endpoint to server.py that fetches a URL and returns Open Graph metadata (title, description, image, url)",
+  "details": {
+    "file": "server.py",
+    "location": "Add new FastAPI route near other API endpoints",
+    "requirements": [
+      "Accept url query parameter",
+      "Validate URL scheme: must start with http:// or https://",
+      "Set request timeout to 5 seconds",
+      "Fetch URL using httpx (already imported)",
+      "Parse HTML with regex for og:title, og:description, og:image meta tags (no external parser deps)",
+      "Return JSON: {title, description, image, url} — empty strings if missing",
+      "Handle errors gracefully: return 200 with empty fields or 400 for invalid URL"
+    ],
+    "notes": "Use httpx.AsyncClient with timeout. Keep regex simple: <meta[^>]+property=[\"']og:title[\"'][^>]+content=[\"']([^\"']+)[\"']."
+  },
+  "guard_focus": [
+    "Is httpx already available? Is there an AsyncClient we can reuse?",
+    "Does the regex handle both single and double quotes around property/content?",
+    "Is timeout enforced?",
+    "Are error responses safe (no internal info leaked)?"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "task_id": "task-slash-1",
+  "phase": "plugin-slash-commands",
+  "plugin": "slash-commands",
+  "type": "plugin",
+  "spec_version": "1.0",
+  "depends_on": ["task-autosave-2"],
+  "goal": "Create plugins/slash-commands.js with autocomplete dropdown for /commands in msgInput",
+  "sub_tasks": [
+    "T1: Create IIFE skeleton with __SlashCommandsInited guard",
+    "T2: msgInput.addEventListener('input', showDropdownIfSlash) — if value starts with '/' and has no space",
+    "T3: showDropdown: create absolute-positioned <ul> under msgInput with matching commands",
+    "T4: Commands: /new, /clear, /search, /theme, /help with descriptions",
+    "T5: ArrowUp/ArrowDown navigates items; Enter selects; Escape closes; Tab selects",
+    "T6: On select: /new = fetch POST /api/session then checkAuth(), /clear = clear thread, /search = focus searchInput, /theme = toggle light/dark, /help = show commands list in a bubble",
+    "T7: If command doesn't send a message, prevent default send behavior (return false or set flag)"
+  ],
+  "guard_focus": [
+    "Does typing '/' show dropdown?",
+    "Does dropdown contain all 5 commands with descriptions?",
+    "Does Enter select but NOT send when dropdown is open?",
+    "Does each command do exactly its spec behavior?",
+    "Does Escape hide the dropdown?",
+    "Are event listeners idempotent (won't double-bind)?"
+  ],
+  "notes": "~80 lines. Complex plugin. Dropdown styling should be minimal and consistent with existing UI (use existing CSS vars)."
+}

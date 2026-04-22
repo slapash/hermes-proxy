@@ -1,0 +1,31 @@
+{
+  "task_id": "task-ogcard-1",
+  "phase": "plugin-open-graph-card",
+  "plugin": "open-graph-card",
+  "type": "plugin",
+  "spec_version": "1.0",
+  "depends_on": ["task-export-1", "core-api-og-a"],
+  "goal": "Create plugins/open-graph-card.js that shows rich link preview cards for URLs in messages",
+  "sub_tasks": [
+    "T1: Create IIFE skeleton with __OgCardInited guard",
+    "T2: Subscribe to HermesProxy.on('messageRendered', (bubble, {role}) => ...)",
+    "T3: In handler: if role !== 'assistant', return. Scan bubble for bare URLs",
+    "T4: For first URL per message, exclude URLs in <pre>/<code>, exclude image file extensions",
+    "T5: Check localStorage cache: 'hermes-og-cache:<url>' TTL 1hr (JSON string with timestamp)",
+    "T6: If cache miss, fetch('/api/og?url=' + encodeURIComponent(url))",
+    "T7: On response, create <div class='og-card'> with title (h3), desc (p), image (img with error handler), domain text",
+    "T8: Insert card after the message bubble's parent .msg",
+    "T9: Store response in localStorage cache with try/catch"
+  ],
+  "guard_focus": [
+    "Does it only create ONE card per message (first URL)?",
+    "Does it skip URLs inside code blocks?",
+    "Does it skip image URLs (.png, .jpg, .gif, .webp, .svg)?",
+    "Is localStorage cache checked before fetch?",
+    "Does fetch use encodeURIComponent?",
+    "Does image have error handler to hide broken images?",
+    "Is card inserted after the message, not inside the bubble?",
+    "Is init guard present?"
+  ],
+  "notes": "~60 lines. Needs /api/og endpoint from core-api-og-a. Uses localStorage for caching."
+}

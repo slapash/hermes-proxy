@@ -1,0 +1,27 @@
+{
+  "task_id": "task-imgpaste-1",
+  "phase": "plugin-image-paste-preview",
+  "plugin": "image-paste-preview",
+  "type": "plugin",
+  "spec_version": "1.0",
+  "depends_on": ["task-ogcard-1", "core-api-attachments-a"],
+  "goal": "Create plugins/image-paste-preview.js with paste interception and preview strip",
+  "sub_tasks": [
+    "T1: Create IIFE skeleton with __ImagePastePreviewInited guard",
+    "T2: msgInput.addEventListener('paste', handlePaste)",
+    "T3: handlePaste: e.clipboardData.items iteration, filter for type.startsWith('image/')",
+    "T4: For each image item: create blob from getAsFile(), generate object URL, show thumbnail preview in a strip below input",
+    "T5: Preview strip shows images as small <img> with X button to remove that image from queue",
+    "T6: Store pending images in an array: [{blob, filename}]. Update preview strip on add/remove",
+    "T7: If clipboard has text + images mixed: allow text to be inserted normally by not calling e.preventDefault() when no images",
+    "T8: msgInput.addEventListener('input', checkIfSendShouldUpload) — on send, append pending image markdown to message"
+  ],
+  "guard_focus": [
+    "Does paste interception only trigger for actual image paste?",
+    "Does normal text paste still work?",
+    "Do image previews show with X button?",
+    "Is there a queue (pendingImages array)?",
+    "Can removed images be re-added by pasting again?"
+  ],
+  "notes": "~70 lines. This plugin handles the preview UI and queueing. Upload happens on send in task-imgpaste-2."
+}
