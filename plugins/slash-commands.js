@@ -58,9 +58,7 @@
   }
 
   function esc(s) {
-    const d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   async function selectCmd(cmd, input) {
@@ -73,7 +71,7 @@
       if (btn) btn.click();
     } else if (cmd.name === 'clear') {
       const thread = document.getElementById('thread');
-      if (thread) thread.innerHTML = '';
+      if (thread) while (thread.firstChild) thread.removeChild(thread.firstChild);
     } else if (cmd.name === 'search') {
       const el = document.getElementById('search-input');
       if (el) { el.focus(); }

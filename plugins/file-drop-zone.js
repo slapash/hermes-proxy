@@ -8,7 +8,9 @@
   const UPLOAD_MAX_MB = 5;
 
   function safe(fn, fallback) { try { return fn(); } catch { return fallback; } }
-  function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  function esc(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
 
   function insertAt(el, text) {
     const ss = el.selectionStart || 0;
