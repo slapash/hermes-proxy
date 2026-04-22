@@ -24,7 +24,7 @@
     const btn = document.createElement('button');
     btn.className = 'fav-star';
     btn.textContent = faved ? '★' : '☆';
-    btn.style.cssText = 'background:none;border:none;cursor:pointer;font-size:16px;color:var(--accent);padding:0 4px;opacity:' + (faved ? '1' : '0.6') + '}';
+    btn.style.cssText = 'background:none;border:none;cursor:pointer;font-size:16px;color:var(--accent);padding:0 4px;opacity:' + (faved ? '1' : '0.6') + ';';
     return btn;
   }
 

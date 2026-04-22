@@ -75,8 +75,15 @@ cp .env.example .env
 | `API_SERVER_URL` | No | `http://127.0.0.1:8642` | URL of the Hermes `api_server` |
 | `STATE_DB_PATH` | No | `~/.hermes/state.db` | Path to the Hermes SQLite state database (read-only) |
 | `PROXY_META_DB_PATH` | No | `~/.hermes/proxy_meta.db` | Path to the proxy-owned metadata database (session renames) |
+| `HERMES_PROXY_PLUGIN_{N}` | No | — | Load a plugin via `local:/abs/path/to/plugin.js` or `https://…` |
 
 **Important:** `HERMES_PROXY_PASSWORD` and `HERMES_PROXY_SIGNING_KEY` are independent. Rotating the password does not invalidate existing cookies. Rotating the signing key invalidates all cookies immediately — all users must re-login.
+
+**Plugin loading** requires a scheme prefix; bare filenames are rejected. Examples:
+```bash
+export HERMES_PROXY_PLUGIN_0="local:/home/hermes/apps/hermes-proxy/plugins/light-theme.js"
+export HERMES_PROXY_PLUGIN_1="https://example.com/widget.js"
+```
 
 ---
 
