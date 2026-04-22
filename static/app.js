@@ -247,6 +247,14 @@
       sessionList.appendChild(el);
     }
     sessionList.scrollTop = 0;
+    // Emit plugin hook after DOM is fully populated
+    if (window.HermesProxy) {
+      try {
+        window.HermesProxy.emit('sessionListRendered', sessionList);
+      } catch (e) {
+        console.error('Plugin error in sessionListRendered:', e);
+      }
+    }
   }
 
   function _addOptimisticSession(firstMsg) {
@@ -286,6 +294,14 @@
 
   async function loadSession(id, anchorTs = null) {
     currentSessionId = id;
+    // Emit plugin hook when switching sessions
+    if (window.HermesProxy) {
+      try {
+        window.HermesProxy.emit('sessionChanged', id);
+      } catch (e) {
+        console.error('Plugin error in sessionChanged:', e);
+      }
+    }
     dismissSessionLostBanner();
     closeSidebar();
     updateActiveSession();
