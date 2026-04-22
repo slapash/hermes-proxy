@@ -9,9 +9,7 @@
   function safe(fn, fallback) { try { return fn(); } catch { return fallback; } }
 
   function stripHtml(html) {
-    const div = document.createElement('div');
-    div.innerHTML = html;
-    return div.textContent || div.innerText || '';
+    return html.replace(/<[^\u003e]*>/g, '');
   }
 
   async function exportSession() {

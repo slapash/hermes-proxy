@@ -51,16 +51,39 @@
   function createCard(data, url) {
     const card = document.createElement('div');
     card.className = 'og-card';
-    card.style.cssText = `
-      padding: 10px 14px; margin: 4px 0 12px; border: 1px solid var(--border);
-      border-radius: 8px; background: var(--surface); color: var(--text); font-size: 13px;
-      display: flex; gap: 12px; align-items: flex-start; word-break: break-all;
-      max-width: 100%; box-shadow: 0 2px 6px #0003;
-    `;
-    const imgHtml = data.image ? `<img src="${esc(data.image)}" style="width:64px;height:64px;object-fit:cover;border-radius:6px;flex-shrink:0;background:var(--bg);" onerror="this.style.display='none'">` : '';
-    const titleHtml = data.title ? `<div style="font-weight:bold;margin-bottom:4px;">${esc(data.title)}</div>` : '';
-    const descHtml = data.description ? `<div style="color:var(--muted);font-size:12px;line-height:1.3;">${esc(data.description)}</div>` : '';
-    card.innerHTML = imgHtml + `<div style="min-width:0;">${titleHtml}${descHtml}<a href="${esc(url)}" target="_blank" rel="noopener" style="color:var(--accent);font-size:12px;display:block;margin-top:4px;">${esc(new URL(url).hostname)}</a></div>`;
+    card.style.cssText = 'padding:10px 14px;margin:4px 0 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px;display:flex;gap:12px;align-items:flex-start;word-break:break-all;max-width:100%;box-shadow:0 2px 6px #0003;';
+
+    const body = document.createElement('div');
+    body.style.cssText = 'min-width:0;';
+
+    if (data.title) {
+      const t = document.createElement('div');
+      t.style.cssText = 'font-weight:bold;margin-bottom:4px;';
+      t.textContent = data.title;
+      body.appendChild(t);
+    }
+    if (data.description) {
+      const d = document.createElement('div');
+      d.style.cssText = 'color:var(--muted);font-size:12px;line-height:1.3;';
+      d.textContent = data.description;
+      body.appendChild(d);
+    }
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.style.cssText = 'color:var(--accent);font-size:12px;display:block;margin-top:4px;';
+    a.textContent = new URL(url).hostname;
+    body.appendChild(a);
+
+    if (data.image) {
+      const img = document.createElement('img');
+      img.src = data.image;
+      img.style.cssText = 'width:64px;height:64px;object-fit:cover;border-radius:6px;flex-shrink:0;background:var(--bg);';
+      img.onerror = function() { this.style.display = 'none'; };
+      card.appendChild(img);
+    }
+    card.appendChild(body);
     return card;
   }
 

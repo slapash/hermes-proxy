@@ -33,7 +33,13 @@
     matches.forEach((cmd, i) => {
       const li = document.createElement('li');
       li.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:13px;color:var(--text);display:flex;justify-content:space-between;gap:8px;';
-      li.innerHTML = `<b>/${cmd.name}</b><span style="color:var(--muted);font-size:12px;">${esc(cmd.desc)}</span>`;
+      const b = document.createElement('b');
+      b.textContent = '/' + cmd.name;
+      const span = document.createElement('span');
+      span.style.cssText = 'color:var(--muted);font-size:12px;';
+      span.textContent = cmd.desc;
+      li.appendChild(b);
+      li.appendChild(span);
       li.addEventListener('click', () => { selectCmd(cmd, input); });
       li.addEventListener('mouseenter', () => { setSelected(i); });
       dropdown.appendChild(li);
@@ -80,7 +86,10 @@
       if (thread) {
         const msg = document.createElement('div');
         msg.className = 'msg assistant';
-        msg.innerHTML = '<div class="bubble">Available commands: <br>' + COMMANDS.map(c => `/<b>${c.name}</b> - ${esc(c.desc)}`).join('<br>') + '</div>';
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+        bubble.textContent = 'Available commands: ' + COMMANDS.map(c => `/${c.name} - ${c.desc}`).join(' | ');
+        msg.appendChild(bubble);
         thread.appendChild(msg);
         thread.scrollTop = thread.scrollHeight;
       }
