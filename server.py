@@ -33,7 +33,7 @@ if _ENV_PATH.exists():
 # ---------------------------------------------------------------------------
 # Config validation at import time (before uvicorn starts serving)
 # ---------------------------------------------------------------------------
-_HERMES_PROXY_PASSWORD = os.environ.get("HERMES_PROXY_PASSWORD", "")
+_HERMES_PROXY_PASSWORD=os.environ.get("HERMES_PROXY_PASSWORD", "")
 _API_SERVER_KEY = os.environ.get("API_SERVER_KEY", "")
 _API_SERVER_URL = os.environ.get("API_SERVER_URL", "http://127.0.0.1:8642")
 _STATE_DB_PATH = os.environ.get("STATE_DB_PATH", str(Path.home() / ".hermes" / "state.db"))
@@ -537,14 +537,54 @@ async def api_session_rename(session_id: str, request: Request) -> Response:
 _STATIC_DIR = Path(__file__).parent / "static"
 _STATIC_DIR.mkdir(exist_ok=True)
 
+# Plugin directory for local plugin scripts
+_PLUGINS_DIR = _STATIC_DIR / "__plugins__"
+_PLUGINS_DIR.mkdir(exist_ok=True)
+
+# Loaded at import time — reads HERMES_PROXY_PLUGIN_0, _1, _2, ...
+_plugin_scripts = []
+for _i in range(10):
+    _val = os.environ.get(f"HERMES_PROXY_PLUGIN_{_i}", "").strip()
+    if not _val:
+        continue
+    if _val.startswith("local:"):
+        _fp = Path(_val[6:])
+        if _fp.is_file():
+            _dest = _PLUGINS_DIR / f"{_i}_{_fp.name}"
+            # symlink or copy — copy avoids broken links on restart
+            try:
+                _dest.write_bytes(_fp.read_bytes())
+                _plugin_scripts.append(f"/static/__plugins__/{_dest.name}")
+            except OSError:
+                pass
+        else:
+            logger.warning("Plugin %d local path not found: %s", _i, _fp)
+    elif _val.startswith("http://") or _val.startswith("https://"):
+        _plugin_scripts.append(_val)
+    else:
+        logger.warning("Plugin %d invalid URL (must start with http://, https://, or local:): %s", _i, _val)
+
+
+def _inject_plugins(html: str) -> str:
+    """Inject <script type=\"module\"> tags for each plugin before </body>."""
+    if not _plugin_scripts:
+        return html
+    _tags = "\n".join(f'<script type="module" src="{src}"></script>' for src in _plugin_scripts)
+    body_close = html.rfind("</body>")
+    if body_close != -1:
+        return html[:body_close] + _tags + "\n" + html[body_close:]
+    return html + "\n" + _tags
+
 
 @app.get("/")
 async def root(request: Request) -> Response:
     index_file = _STATIC_DIR / "index.html"
     if not index_file.exists():
         return JSONResponse({"error": "index.html not found"}, status_code=404)
+    raw_html = index_file.read_text()
+    html_with_plugins = _inject_plugins(raw_html)
     return Response(
-        content=index_file.read_bytes(),
+        content=html_with_plugins.encode(),
         media_type="text/html",
         headers={"Cache-Control": "no-store"},
     )

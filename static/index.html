@@ -387,5 +387,25 @@
 </div>
 
 <script src="/static/app.js" defer></script>
+<script>
+  // HermesProxy — global event bus for plugins
+  // Type: any, because plugins are untrusted third-party code.
+  window.HermesProxy = {
+    _hooks: {},
+    on(event, fn) {
+      (this._hooks[event] ||= []).push(fn);
+    },
+    emit(event, ...args) {
+      (this._hooks[event] || []).forEach(fn => fn(...args));
+    },
+    registerTheme(name, colors) {
+      this.emit('themeRegister', name, colors);
+    },
+    setTheme(name) {
+      document.documentElement.setAttribute('data-theme', name);
+      this.emit('themeChange', name);
+    },
+  };
+</script>
 </body>
 </html>

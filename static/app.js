@@ -392,6 +392,7 @@
     }
     msg.appendChild(bubble);
     thread.appendChild(msg);
+    if (window.HermesProxy) window.HermesProxy.emit('messageRendered', bubble, { role, content, ts });
     scrollToBottom();
     return bubble;
   }
@@ -421,6 +422,7 @@
   async function sendMessage() {
     const text = msgInput.value.trim();
     if (!text || streaming) return;
+    window.HermesProxy && window.HermesProxy.emit('beforeSend', text);
 
     streaming = true;
     sendBtn.disabled = true;
