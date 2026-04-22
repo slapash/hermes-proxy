@@ -6,3 +6,4 @@ __pycache__/
 .DS_Store
 *.log
 *.err
+static/__plugins__/

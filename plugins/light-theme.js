@@ -11,19 +11,20 @@
       --bg: #f4f7fa;
       --surface: #ffffff;
       --surface2: #eef2f7;
-      --accent: #00d4ff;
+      --accent: #0066cc;
+      --accent-glow: #00d4ff;
       --text: #1a2a3a;
       --muted: #6b7b8a;
       --border: #d0dbe5;
       --user-bubble: #e0efff;
     }
-    /* Topbar, button accents */
+    /* Topbar accent text */
     :root[data-theme="light"] #topbar {
       background: linear-gradient(90deg, #00d4ff 0%, #0088ff 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
-    /* Send button, login button */
+    /* Send button, login button — neon blue on buttons (white text on neon bg) */
     :root[data-theme="light"] #send-btn,
     :root[data-theme="light"] #login-btn {
       background: #00d4ff !important;
@@ -33,24 +34,30 @@
     }
     /* Active session */
     :root[data-theme="light"] .session-item.active {
-      border-color: #00d4ff;
+      border-color: #0066cc;
       background: #e0f8ff;
-      box-shadow: inset 3px 0 0 #00d4ff;
+      box-shadow: inset 3px 0 0 #0066cc;
     }
     /* Sidebar */
     :root[data-theme="light"] #sidebar {
       background: linear-gradient(180deg, #ffffff 0%, #f0f6ff 100%);
       border-right: 1px solid #d0dbe5;
     }
-    /* Code blocks */
+    /* Code blocks — light theme matching */
     :root[data-theme="light"] pre {
-      background: #1e1e2e !important;
-      color: #e0e0ff !important;
-      box-shadow: 0 2px 8px #00000015;
+      background: #eef2f7 !important;
+      color: #1a2a3a !important;
+      border: 1px solid #d0dbe5 !important;
+      box-shadow: 0 2px 8px #00000008;
+    }
+    :root[data-theme="light"] .bubble code {
+      background: #e0e8f0 !important;
+      border-color: #d0dbe5 !important;
+      color: #1a2a3a !important;
     }
     /* Scrollbar */
     :root[data-theme="light"] ::-webkit-scrollbar-thumb {
-      background: #00d4ff;
+      background: #0066cc;
       border-radius: 6px;
     }
   `;
@@ -62,8 +69,8 @@
 
   // ── Toggle button ──
   function addToggleBtn() {
+    if (document.getElementById('theme-toggle')) return;
     const topbar = document.getElementById('topbar');
-    if (!topbar || document.getElementById('theme-toggle')) return;
     const btn = document.createElement('button');
     btn.id = 'theme-toggle';
     btn.textContent = getTheme() === 'light' ? '🌙' : '☀️';
@@ -72,9 +79,19 @@
       const now = getTheme() === 'light' ? 'dark' : 'light';
       window.HermesProxy.setTheme(now);
       saveTheme(now);
-      btn.textContent = now === 'light' ? '🌙' : '☀️';
+      document.querySelectorAll('#theme-toggle').forEach(b => b.textContent = now === 'light' ? '🌙' : '☀️');
     });
-    topbar.appendChild(btn);
+    // Mobile: append to topbar (flex row, pushes right via margin-left:auto)
+    if (topbar && getComputedStyle(topbar).display !== 'none') {
+      topbar.appendChild(btn);
+      return;
+    }
+    // Desktop: append to sidebar header
+    const header = document.querySelector('.sidebar-header');
+    if (header) {
+      btn.style.marginLeft = '8px';
+      header.appendChild(btn);
+    }
   }
 
   function getTheme() {
