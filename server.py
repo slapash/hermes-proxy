@@ -192,12 +192,12 @@ def _evict_stale_browser_sessions() -> None:
         _session_created.pop(k, None)
 
 
-def _set_auth_cookie(response: Response, token: str) -> None:
+def _set_auth_cookie(response: Response, token: str, secure: bool = True) -> None:
     response.set_cookie(
         key="hermes-proxy-auth",
         value=token,
         httponly=True,
-        secure=True,
+        secure=secure,
         samesite="strict",
         path="/",
         max_age=2592000,
@@ -220,7 +220,7 @@ async def auth_login(request: Request) -> Response:
 
     try:
         body = await request.json()
-    except json.JSONDecodeError:
+    except _json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
     except Exception as exc:
         logger.error("Unexpected error parsing login body: %s", exc)
@@ -232,7 +232,11 @@ async def auth_login(request: Request) -> Response:
 
     token = _make_token()
     response = JSONResponse({"ok": True})
-    _set_auth_cookie(response, token)
+    # Auto-detect HTTPS: set secure=True only if request is HTTPS or behind HTTPS proxy.
+    # This fixes "login loop" on plain HTTP localhost while keeping cookies secure in prod.
+    proto = request.headers.get("x-forwarded-proto", "").lower()
+    is_https = request.url.scheme == "https" or proto == "https"
+    _set_auth_cookie(response, token, secure=is_https)
     return response
 
 
@@ -275,7 +279,7 @@ async def api_chat(request: Request) -> Response:
 
     try:
         body = await request.json()
-    except json.JSONDecodeError:
+    except _json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
     except Exception as exc:
         logger.error("Unexpected error parsing chat body: %s", exc)

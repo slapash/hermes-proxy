@@ -2,6 +2,7 @@
   // ── State ──
   let currentSessionId = localStorage.getItem('hermes-session-id') || null;
   let streaming = false;
+  let _thinkingTimer = null;
 
   // ── DOM refs ──
   const loginOverlay = document.getElementById('login-overlay');
@@ -413,23 +414,39 @@
     return bubble;
   }
 
-  function showThinking() {
+  function showThinking(label = null) {
+    let el = document.getElementById('thinking-indicator');
+    if (el) el.remove();
     const msg = document.createElement('div');
     msg.id = 'thinking-indicator';
+    const toolName = label ? label.split(' ')[0].replace(/[_/].*$/, '') : null;
     msg.className = 'msg assistant';
-    const bubble = document.createElement('div');
-    bubble.className = 'bubble';
-    bubble.style.cssText = 'color:var(--accent);letter-spacing:3px;animation:pulse 1.2s ease-in-out infinite;';
-    bubble.textContent = '● ● ●';
-    msg.appendChild(bubble);
+    msg.innerHTML = `<div class="bubble thinking-bubble" id="thinking-content"><span class="thinking-pulse"></span><span class="thinking-text">${toolName ? toolName : 'Thinking'}</span><span class="thinking-elapsed" id="thinking-elapsed">0s</span></div>`;
     thread.appendChild(msg);
     scrollToBottom();
+
+    // elapsed timer
+    const elTime = document.getElementById('thinking-elapsed');
+    if (elTime) {
+      const start = Date.now();
+      _thinkingTimer = setInterval(() => {
+        const sec = Math.round((Date.now() - start) / 1000);
+        elTime.textContent = sec + 's';
+      }, 1000);
+    }
     return msg;
+  }
+
+  function updateThinking(label) {
+    const toolName = label ? label.split(' ')[0].replace(/[_/].*$/, '') : null;
+    const textEl = document.querySelector('#thinking-content .thinking-text, #thinking-indicator .thinking-text');
+    if (textEl) textEl.textContent = toolName || 'Thinking';
   }
 
   function removeThinking() {
     const el = document.getElementById('thinking-indicator');
     if (el) el.remove();
+    if (_thinkingTimer) { clearInterval(_thinkingTimer); _thinkingTimer = null; }
   }
 
   // ── Send ──
@@ -511,30 +528,33 @@
           if (!dataLine || dataLine === '[DONE]') continue;
           try {
             const json = JSON.parse(dataLine);
-            if (eventType === 'session' && json.hermes_session_id) {
-              // Capture session ID emitted by proxy at end of stream
-              currentSessionId = json.hermes_session_id;
-              localStorage.setItem('hermes-session-id', currentSessionId);
-              await loadSessions();
-              updateActiveSession();
-            } else {
-              const delta = json?.choices?.[0]?.delta?.content;
-              if (delta) {
-                if (!assistantBubble) {
-                  removeThinking();
-                  const msg = document.createElement('div');
-                  msg.className = 'msg assistant';
-                  assistantBubble = document.createElement('div');
-                  assistantBubble.className = 'bubble';
-                  assistantBubble.dataset.ts = formatTime(Date.now());
-                  msg.appendChild(assistantBubble);
-                  thread.appendChild(msg);
-                }
-                assistantContent += delta;
-                assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
-                scrollToBottom();
+          if (eventType === 'session' && json.hermes_session_id) {
+            // Capture session ID emitted by proxy at end of stream
+            currentSessionId = json.hermes_session_id;
+            localStorage.setItem('hermes-session-id', currentSessionId);
+            await loadSessions();
+            updateActiveSession();
+          } else if (eventType === 'hermes.tool.progress' && json.tool) {
+            const label = json.label || json.tool;
+            updateThinking(label);
+          } else {
+            const delta = json?.choices?.[0]?.delta?.content;
+            if (delta) {
+              if (!assistantBubble) {
+                removeThinking();
+                const msg = document.createElement('div');
+                msg.className = 'msg assistant';
+                assistantBubble = document.createElement('div');
+                assistantBubble.className = 'bubble';
+                assistantBubble.dataset.ts = formatTime(Date.now());
+                msg.appendChild(assistantBubble);
+                thread.appendChild(msg);
               }
+              assistantContent += delta;
+              assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
+              scrollToBottom();
             }
+          }
           } catch {}
         }
       }
@@ -548,12 +568,21 @@
           if (data === '[DONE]') continue;
           try {
             const json = JSON.parse(data);
-            const delta = json?.choices?.[0]?.delta?.content;
-            if (delta) {
-              assistantContent += delta;
-              if (assistantBubble) {
-                assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
-                scrollToBottom();
+            if (eventType === 'session' && json.hermes_session_id) {
+              currentSessionId = json.hermes_session_id;
+              localStorage.setItem('hermes-session-id', currentSessionId);
+              await loadSessions();
+              updateActiveSession();
+            } else if (eventType === 'hermes.tool.progress' && json.tool) {
+              updateThinking(json.label || json.tool);
+            } else {
+              const delta = json?.choices?.[0]?.delta?.content;
+              if (delta) {
+                assistantContent += delta;
+                if (assistantBubble) {
+                  assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
+                  scrollToBottom();
+                }
               }
             }
           } catch {}

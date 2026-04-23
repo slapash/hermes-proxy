@@ -280,11 +280,26 @@
     }
 
     /* thinking indicator */
-    #thinking {
-      align-self: flex-start; color: var(--muted); font-size: 13px;
-      padding: 6px 14px; animation: pulse 1.2s ease-in-out infinite;
+    .thinking-bubble {
+      display: inline-flex; align-items: center; gap: 10px;
+      background: var(--bg) !important;
+      border: 1px solid var(--border);
+      padding: 10px 16px !important;
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.15);
     }
-    @keyframes pulse { 0%,100% { opacity: .4; } 50% { opacity: 1; } }
+    .thinking-pulse {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent);
+      animation: thinkPulse 1.2s ease-in-out infinite;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+    .thinking-text { font-weight: 500; }
+    .thinking-elapsed { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+    @keyframes thinkPulse { 0%,100% { opacity:.3; transform:scale(.7); } 50% { opacity:1; transform:scale(1); } }
 
     /* input area */
     #input-area {
