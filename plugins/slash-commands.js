@@ -17,13 +17,15 @@
 
   let dropdown = null;
   let selectedIdx = -1;
+  let currentMatches = [];
 
   function hideDropdown() {
-    if (dropdown) { dropdown.remove(); dropdown = null; selectedIdx = -1; }
+    if (dropdown) { dropdown.remove(); dropdown = null; selectedIdx = -1; currentMatches = []; }
   }
 
   function buildDropdown(input, matches) {
     hideDropdown();
+    currentMatches = matches;
     dropdown = document.createElement('ul');
     dropdown.className = 'slash-dropdown';
     dropdown.style.cssText = `
@@ -104,17 +106,27 @@
     buildDropdown(e.target, matches);
   }
 
-  function onKeydown(e) {
+  function onKeydownCapture(e) {
     if (!dropdown) return;
-    if (e.key === 'ArrowUp')   { e.preventDefault(); setSelected(selectedIdx - 1); }
-    if (e.key === 'ArrowDown') { e.preventDefault(); setSelected(selectedIdx + 1); }
-    if (e.key === 'Enter' || e.key === 'Tab') {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault();
-      const cmd = COMMANDS[selectedIdx];
+      e.stopImmediatePropagation();
+      if (e.key === 'ArrowUp') { setSelected(selectedIdx - 1); return; }
+      if (e.key === 'ArrowDown') { setSelected(selectedIdx + 1); return; }
+    }
+    if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const cmd = currentMatches[selectedIdx];
       if (cmd) selectCmd(cmd, e.target);
       return;
     }
-    if (e.key === 'Escape') { hideDropdown(); return; }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      hideDropdown();
+      return;
+    }
   }
 
   function onClickOutside(e) {
@@ -125,7 +137,7 @@
     window.msgInput = document.getElementById('msg-input');
     if (!window.msgInput) return;
     window.msgInput.addEventListener('input', onInput);
-    window.msgInput.addEventListener('keydown', onKeydown);
+    window.msgInput.addEventListener('keydown', onKeydownCapture, true);
     document.addEventListener('click', onClickOutside);
     console.log(`[${PLUGIN_NAME}] loaded`);
   }

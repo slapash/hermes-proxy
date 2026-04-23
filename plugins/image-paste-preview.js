@@ -22,17 +22,38 @@
 
   function showPreview(blob) {
     const wrap = getWrap();
+    if (!wrap) return null;
+
+    const objectUrl = URL.createObjectURL(blob);
     const img = document.createElement('img');
-    img.src = URL.createObjectURL(blob);
-    img.style.cssText = 'width:48px;height:48px;object-fit:cover;border-radius:4px;border:1px solid var(--border);';
+    img.src = objectUrl;
+    img.alt = 'Pasted image preview';
+    img.style.cssText = 'width:48px;height:48px;object-fit:cover;border-radius:4px;border:1px solid var(--border);background:var(--surface2);';
+
+    const fallback = document.createElement('div');
+    fallback.textContent = '🖼️';
+    fallback.title = 'Image preview unavailable';
+    fallback.style.cssText = 'width:48px;height:48px;display:none;align-items:center;justify-content:center;border-radius:4px;border:1px solid var(--border);background:var(--surface2);font-size:22px;';
+    img.addEventListener('error', () => {
+      img.style.display = 'none';
+      fallback.style.display = 'flex';
+    }, { once: true });
+
     const el = document.createElement('div');
     el.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const spinner = document.createElement('span');
     spinner.textContent = '⏳';
     el.appendChild(img);
+    el.appendChild(fallback);
     el.appendChild(spinner);
     wrap.appendChild(el);
-    return { el, spinner };
+
+    function remove() {
+      URL.revokeObjectURL(objectUrl);
+      if (el.parentNode) el.remove();
+    }
+
+    return { el, spinner, remove };
   }
 
   function getWrap() {
@@ -82,12 +103,14 @@
       if (!it.type.startsWith('image/')) continue;
       const blob = it.getAsFile();
       if (!blob) continue;
-      const { el, spinner } = showPreview(blob);
+      const preview = showPreview(blob);
+      if (!preview) continue;
+      const { spinner, remove } = preview;
       upload(blob, it.type)
         .then(md => {
           spinner.textContent = '✅';
           insertAt(msgInput, md + '\n');
-          setTimeout(() => { if (el.parentNode) el.remove(); }, 2000);
+          setTimeout(remove, 2000);
         })
         .catch(err => {
           console.error('[paste]', err);
