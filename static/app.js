@@ -2,6 +2,7 @@
   // ── State ──
   let currentSessionId = localStorage.getItem('hermes-session-id') || null;
   let streaming = false;
+  let autoScrollLocked = true;
   let _thinkingTimer = null;
   let _thinkingStartedAt = 0;
 
@@ -36,9 +37,22 @@
   hamburger.addEventListener('click', openSidebar);
   sidebarOverlay.addEventListener('click', closeSidebar);
 
+  function isThreadNearBottom(threshold = 48) {
+    return thread.scrollHeight - thread.scrollTop - thread.clientHeight <= threshold;
+  }
+
   function scrollToBottom() {
     thread.scrollTop = thread.scrollHeight;
+    autoScrollLocked = true;
   }
+
+  function maybeScrollToBottom() {
+    if (autoScrollLocked) scrollToBottom();
+  }
+
+  thread.addEventListener('scroll', () => {
+    autoScrollLocked = isThreadNearBottom();
+  }, { passive: true });
 
   function formatDate(ts) {
     if (!ts) return '';
@@ -524,6 +538,7 @@
     if (!currentSessionId && !searchInput.value.trim()) {
       _addOptimisticSession(text);
     }
+    autoScrollLocked = true;
     appendMessage('user', text, Date.now());
     showThinking();
 
@@ -605,7 +620,7 @@
               }
               assistantContent += delta;
               assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
-              scrollToBottom();
+              maybeScrollToBottom();
             }
           }
           } catch {}
@@ -640,7 +655,7 @@
                 assistantContent += delta;
                 if (assistantBubble) {
                   assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
-                  scrollToBottom();
+                  maybeScrollToBottom();
                 }
               }
             }
