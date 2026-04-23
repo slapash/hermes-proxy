@@ -3,6 +3,7 @@
   let currentSessionId = localStorage.getItem('hermes-session-id') || null;
   let streaming = false;
   let _thinkingTimer = null;
+  let _thinkingStartedAt = 0;
 
   // ── DOM refs ──
   const loginOverlay = document.getElementById('login-overlay');
@@ -414,39 +415,91 @@
     return bubble;
   }
 
+  function emitThinking(event, payload) {
+    try {
+      window.HermesProxy && window.HermesProxy.emit(event, payload);
+    } catch (e) {
+      console.error('Plugin error in', event, ':', e);
+    }
+  }
+
+  function cleanThinkingLabel(label) {
+    return label ? String(label).split(' ')[0].replace(/[_/].*$/, '') : 'Thinking';
+  }
+
   function showThinking(label = null) {
-    let el = document.getElementById('thinking-indicator');
-    if (el) el.remove();
+    const existing = document.getElementById('thinking-indicator');
+    if (existing) removeThinking();
+
+    _thinkingStartedAt = Date.now();
     const msg = document.createElement('div');
     msg.id = 'thinking-indicator';
-    const toolName = label ? label.split(' ')[0].replace(/[_/].*$/, '') : null;
     msg.className = 'msg assistant';
-    msg.innerHTML = `<div class="bubble thinking-bubble" id="thinking-content"><span class="thinking-pulse"></span><span class="thinking-text">${toolName ? toolName : 'Thinking'}</span><span class="thinking-elapsed" id="thinking-elapsed">0s</span></div>`;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble thinking-bubble';
+    bubble.id = 'thinking-content';
+
+    const pulse = document.createElement('span');
+    pulse.className = 'thinking-pulse';
+
+    const text = document.createElement('span');
+    text.className = 'thinking-text';
+    text.textContent = cleanThinkingLabel(label);
+
+    const elapsed = document.createElement('span');
+    elapsed.className = 'thinking-elapsed';
+    elapsed.id = 'thinking-elapsed';
+    elapsed.textContent = '0s';
+
+    bubble.appendChild(pulse);
+    bubble.appendChild(text);
+    bubble.appendChild(elapsed);
+    msg.appendChild(bubble);
     thread.appendChild(msg);
     scrollToBottom();
 
-    // elapsed timer
-    const elTime = document.getElementById('thinking-elapsed');
-    if (elTime) {
-      const start = Date.now();
-      _thinkingTimer = setInterval(() => {
-        const sec = Math.round((Date.now() - start) / 1000);
-        elTime.textContent = sec + 's';
-      }, 1000);
-    }
+    _thinkingTimer = setInterval(() => {
+      const elTime = document.getElementById('thinking-elapsed');
+      if (!elTime) return;
+      const sec = Math.round((Date.now() - _thinkingStartedAt) / 1000);
+      elTime.textContent = sec + 's';
+    }, 1000);
+
+    emitThinking('thinkingCreated', {
+      el: msg,
+      bubbleEl: bubble,
+      startedAt: _thinkingStartedAt,
+      label: text.textContent,
+    });
     return msg;
   }
 
-  function updateThinking(label) {
-    const toolName = label ? label.split(' ')[0].replace(/[_/].*$/, '') : null;
+  function updateThinking(label, raw = null) {
+    const el = document.getElementById('thinking-indicator');
+    if (!el) return;
+    const bubbleEl = document.getElementById('thinking-content');
     const textEl = document.querySelector('#thinking-content .thinking-text, #thinking-indicator .thinking-text');
-    if (textEl) textEl.textContent = toolName || 'Thinking';
+    const nextLabel = cleanThinkingLabel(label);
+    if (textEl) textEl.textContent = nextLabel;
+    emitThinking('thinkingUpdated', {
+      el,
+      bubbleEl,
+      label: nextLabel,
+      tool: raw && raw.tool ? raw.tool : label,
+      raw,
+    });
   }
 
   function removeThinking() {
     const el = document.getElementById('thinking-indicator');
-    if (el) el.remove();
     if (_thinkingTimer) { clearInterval(_thinkingTimer); _thinkingTimer = null; }
+    if (!el) return;
+    const bubbleEl = document.getElementById('thinking-content');
+    const elapsedMs = _thinkingStartedAt ? Date.now() - _thinkingStartedAt : 0;
+    emitThinking('thinkingRemoved', { el, bubbleEl, elapsedMs });
+    el.remove();
+    _thinkingStartedAt = 0;
   }
 
   // ── Send ──
@@ -501,7 +554,7 @@
       }
 
       const reader = res.body.getReader();
-        const decoder = new TextDecoder();
+      const decoder = new TextDecoder();
       let buffer = '';
 
       while (true) {
@@ -536,7 +589,7 @@
             updateActiveSession();
           } else if (eventType === 'hermes.tool.progress' && json.tool) {
             const label = json.label || json.tool;
-            updateThinking(label);
+            updateThinking(label, json);
           } else {
             const delta = json?.choices?.[0]?.delta?.content;
             if (delta) {
@@ -562,19 +615,25 @@
       // Process any remaining buffer
       if (buffer) {
         const lines = buffer.split('\n');
+        let eventType = 'message';
+        let dataLine = null;
         for (const line of lines) {
-          if (!line.startsWith('data:')) continue;
-          const data = line.slice(5).trim();
-          if (data === '[DONE]') continue;
+          if (line.startsWith('event:')) {
+            eventType = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            dataLine = line.slice(5).trim();
+          }
+        }
+        if (dataLine && dataLine !== '[DONE]') {
           try {
-            const json = JSON.parse(data);
+            const json = JSON.parse(dataLine);
             if (eventType === 'session' && json.hermes_session_id) {
               currentSessionId = json.hermes_session_id;
               localStorage.setItem('hermes-session-id', currentSessionId);
               await loadSessions();
               updateActiveSession();
             } else if (eventType === 'hermes.tool.progress' && json.tool) {
-              updateThinking(json.label || json.tool);
+              updateThinking(json.label || json.tool, json);
             } else {
               const delta = json?.choices?.[0]?.delta?.content;
               if (delta) {
