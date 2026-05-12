@@ -8,6 +8,7 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from fastapi import FastAPI, Request, Response, UploadFile, File
@@ -116,7 +117,7 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "default-src 'self'; "
             "script-src 'self' https://cdn.jsdelivr.net; "
             "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; "
+            "img-src 'self' data: https:; "
             "connect-src 'self'; "
             "frame-ancestors 'none';"
         )
@@ -287,6 +288,29 @@ async def api_chat(request: Request) -> Response:
 
     message = body.get("message", "")
     session_id_override = body.get("session_id")
+    attachments = body.get("attachments")
+
+    # --- Validate and assemble attachments -------------------------------------
+    attachment_markdown = ""
+    if attachments is not None:
+        if not isinstance(attachments, list):
+            return JSONResponse({"error": "attachments must be an array"}, status_code=400)
+        for idx, att in enumerate(attachments):
+            if not isinstance(att, dict):
+                return JSONResponse({"error": f"attachment[{idx}] must be an object"}, status_code=400)
+            url = att.get("url")
+            md = att.get("markdown")
+            if not isinstance(url, str) or not url.strip():
+                return JSONResponse({"error": f"attachment[{idx}] missing or invalid url"}, status_code=400)
+            if not isinstance(md, str):
+                return JSONResponse({"error": f"attachment[{idx}] markdown must be a string"}, status_code=400)
+            # Allow absolute URLs or local upload paths
+            if not (url.startswith("http://") or url.startswith("https://") or url.startswith("/")):
+                return JSONResponse({"error": f"attachment[{idx}] url must be http://, https://, or /"}, status_code=400)
+            attachment_markdown += md.strip() + "\n\n"
+
+    user_content = attachment_markdown + message if attachment_markdown else message
+
 
     if "session_id" in body:
         if session_id_override:
@@ -303,7 +327,7 @@ async def api_chat(request: Request) -> Response:
 
     upstream_body = {
         "model": "hermes-agent",
-        "messages": [{"role": "user", "content": message}],
+        "messages": [{"role": "user", "content": user_content}],
         "stream": True,
     }
 
@@ -639,19 +663,59 @@ async def api_attachments(file: UploadFile = File(...)):
     return JSONResponse({"url": url, "markdown": md})
 
 
+def _extract_favicon(html: str, base_url: str) -> str:
+    """Extract favicon URL from HTML <link rel=icon> tags."""
+    favicon_patterns = [
+        re.compile(r'<link[^>]+rel=["\'](?:shortcut\s+)?icon["\'][^>]+href=["\']([^"\']+)["\']', re.I),
+        re.compile(r'<link[^>]+href=["\']([^"\']+)["\'][^>]+rel=["\'](?:shortcut\s+)?icon["\']', re.I),
+    ]
+    for pattern in favicon_patterns:
+        m = pattern.search(html)
+        if m:
+            href = m.group(1).strip()
+            if href.startswith("http://") or href.startswith("https://") or href.startswith("//"):
+                if href.startswith("//"):
+                    parsed = urlparse(base_url)
+                    return f"{parsed.scheme}:{href}"
+                return href
+            return urljoin(base_url, href)
+    return ""
+
+
+def _domain_favicon(url: str) -> str:
+    """Return domain root /favicon.ico URL."""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+
+
+def _extract_title(html: str) -> str:
+    """Extract <title> tag content as fallback."""
+    m = re.search(r'<title[^>]*>([^<]+)</title>', html, re.I)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
 @app.get("/api/og")
 async def api_og(url: str):
-    """Fetch a URL and return Open Graph metadata."""
+    """Fetch a URL and return Open Graph + favicon metadata."""
     if not url or not (url.startswith("http://") or url.startswith("https://")):
         return JSONResponse({"error": "URL must start with http:// or https://"}, status_code=400)
+
     try:
         async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             html = resp.text
+    except httpx.TimeoutException:
+        logger.warning("OG fetch timed out (5s): %s", url)
+        return JSONResponse({"title": "", "description": "", "image": "", "favicon": "", "url": url})
+    except httpx.RequestError as exc:
+        logger.warning("OG fetch failed (network): %s — %s", url, exc)
+        return JSONResponse({"title": "", "description": "", "image": "", "favicon": "", "url": url})
     except Exception as exc:
         logger.warning("OG fetch failed: %s", exc)
-        return JSONResponse({"title": "", "description": "", "image": "", "url": url})
+        return JSONResponse({"title": "", "description": "", "image": "", "favicon": "", "url": url})
 
     def _meta_tag(name, html_text):
         for attr in [f'property="og:{name}"', f"property='og:{name}'", f'name="{name}"', f"name='{name}'"]:
@@ -665,10 +729,22 @@ async def api_og(url: str):
                 return m2.group(1)
         return ""
 
+    title = _meta_tag("title", html)
+    if not title:
+        title = _extract_title(html)
+
+    description = _meta_tag("description", html)
+    image = _meta_tag("image", html)
+
+    favicon = _extract_favicon(html, url)
+    if not favicon:
+        favicon = _domain_favicon(url)
+
     return JSONResponse({
-        "title": _meta_tag("title", html),
-        "description": _meta_tag("description", html),
-        "image": _meta_tag("image", html),
+        "title": title,
+        "description": description,
+        "image": image,
+        "favicon": favicon,
         "url": url,
     })
 
