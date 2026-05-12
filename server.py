@@ -1,10 +1,12 @@
 import hmac
 import json as _json
 import logging
+import mimetypes
 import os
 import re
 import secrets
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -100,12 +102,18 @@ app = FastAPI()
 # ---------------------------------------------------------------------------
 
 class _MaxBodyMiddleware(BaseHTTPMiddleware):
-    """Reject POST bodies over 1 MB to prevent memory exhaustion."""
+    """Reject oversized POST bodies before reading them into memory."""
     async def dispatch(self, request, call_next):
         if request.method == "POST":
             content_length = request.headers.get("content-length")
-            if content_length and int(content_length) > 1_048_576:
-                return JSONResponse({"error": "Request too large"}, status_code=413)
+            if content_length:
+                default_limit = 1_048_576
+                # Image uploads are route-limited separately; allow 25 MB files plus
+                # small multipart overhead while keeping JSON/chat requests tight.
+                upload_limit = int(globals().get("_UPLOAD_MAX_SIZE", 25 * 1024 * 1024)) + 1_048_576
+                limit = upload_limit if request.url.path == "/api/attachments" else default_limit
+                if int(content_length) > limit:
+                    return JSONResponse({"error": "Request too large"}, status_code=413)
         return await call_next(request)
 
 
@@ -291,7 +299,7 @@ async def api_chat(request: Request) -> Response:
     attachments = body.get("attachments")
 
     # --- Validate and assemble attachments -------------------------------------
-    attachment_markdown = ""
+    attachment_context = ""
     if attachments is not None:
         if not isinstance(attachments, list):
             return JSONResponse({"error": "attachments must be an array"}, status_code=400)
@@ -307,9 +315,38 @@ async def api_chat(request: Request) -> Response:
             # Allow absolute URLs or local upload paths
             if not (url.startswith("http://") or url.startswith("https://") or url.startswith("/")):
                 return JSONResponse({"error": f"attachment[{idx}] url must be http://, https://, or /"}, status_code=400)
-            attachment_markdown += md.strip() + "\n\n"
 
-    user_content = attachment_markdown + message if attachment_markdown else message
+            filename = str(att.get("filename") or Path(urlparse(url).path).name or f"attachment-{idx + 1}")
+            mime_type = str(att.get("mime_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream")
+            absolute_url = str(att.get("absolute_url") or "")
+            if not absolute_url:
+                absolute_url = str(request.base_url).rstrip("/") + url if url.startswith("/") else url
+
+            local_path = ""
+            parsed_path = urlparse(url).path
+            if parsed_path.startswith("/uploads/"):
+                candidate = (_UPLOADS_DIR / Path(parsed_path).name).resolve()
+                uploads_root = _UPLOADS_DIR.resolve()
+                if candidate.is_file() and uploads_root in candidate.parents:
+                    local_path = str(candidate)
+            elif isinstance(att.get("local_path"), str):
+                candidate = Path(att["local_path"]).resolve()
+                uploads_root = _UPLOADS_DIR.resolve()
+                if candidate.is_file() and uploads_root in candidate.parents:
+                    local_path = str(candidate)
+
+            attachment_context += (
+                f"[Attachment {idx + 1}]\n"
+                f"filename: {filename}\n"
+                f"mime_type: {mime_type}\n"
+                f"local_path: {local_path or 'unavailable'}\n"
+                f"url: {absolute_url}\n"
+                "Use vision_analyze on local_path or url if you need to inspect image pixels. "
+                "Use terminal/read_file on local_path for non-image files when appropriate.\n"
+                f"markdown: {md.strip()}\n\n"
+            )
+
+    user_content = attachment_context + message if attachment_context else message
 
 
     if "session_id" in body:
@@ -393,7 +430,8 @@ async def api_sessions(request: Request) -> Response:
             # Exclude Open WebUI system-generated sessions (### Task: prefix).
             cur.execute(
                 """
-                SELECT s.id, s.title, s.started_at, s.ended_at, s.message_count, s.model,
+                SELECT s.id, s.title, s.started_at, s.ended_at, s.end_reason,
+                       s.parent_session_id, s.message_count, s.model,
                        (SELECT m.content FROM messages m
                         WHERE m.session_id = s.id AND m.role = 'user'
                         ORDER BY m.timestamp ASC LIMIT 1) AS first_msg
@@ -413,7 +451,20 @@ async def api_sessions(request: Request) -> Response:
                 if not r.get("title") and first_msg:
                     r["title"] = first_msg[:72].strip()
                 rows.append(r)
-        # Overlay custom names from proxy_meta.db
+        # Collapse compression child sessions: Hermes can continue a long chat in
+        # child sessions after context compression. The sidebar should show one
+        # conversation row, using the latest leaf, not every historical segment.
+        roots: dict[str, dict] = {}
+        for r in rows:
+            root_id = r.get("parent_session_id") or r["id"]
+            r["root_session_id"] = root_id
+            current = roots.get(root_id)
+            if current is None or (r.get("started_at") or 0) > (current.get("started_at") or 0):
+                roots[root_id] = r
+        rows = sorted(roots.values(), key=lambda r: r.get("started_at") or 0, reverse=True)
+
+        # Overlay custom names from proxy_meta.db. A custom name on a compressed
+        # root applies to the latest child row shown for that conversation.
         try:
             with sqlite3.connect(_PROXY_META_DB_PATH, timeout=5) as pmconn:
                 pmconn.row_factory = sqlite3.Row
@@ -421,8 +472,11 @@ async def api_sessions(request: Request) -> Response:
                 pmcur.execute("SELECT session_id, custom_name FROM session_meta")
                 custom_names = {r["session_id"]: r["custom_name"] for r in pmcur.fetchall()}
             for r in rows:
+                root_id = r.get("root_session_id") or r["id"]
                 if r["id"] in custom_names:
                     r["title"] = custom_names[r["id"]]
+                elif root_id in custom_names:
+                    r["title"] = custom_names[root_id]
         except Exception as exc:
             logger.warning("proxy_meta.db read failed (non-fatal): %s", exc)
         return JSONResponse(rows)
@@ -631,13 +685,15 @@ _PLUGIN_DIR = _STATIC_DIR / "__plugins__"
 _PLUGIN_DIR.mkdir(exist_ok=True)
 _UPLOADS_DIR = Path(__file__).parent / "uploads"
 _UPLOADS_DIR.mkdir(exist_ok=True)
-_UPLOAD_MAX_SIZE = 5 * 1024 * 1024  # 5 MB
+_UPLOAD_MAX_SIZE = 25 * 1024 * 1024  # 25 MB
 _UPLOAD_WHITELIST = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
 
 @app.post("/api/attachments")
-async def api_attachments(file: UploadFile = File(...)):
-    """Accept a single image upload and return markdown URL."""
+async def api_attachments(request: Request, file: UploadFile = File(...)):
+    """Accept a single authenticated image upload and return markdown URL."""
+    if not _is_authenticated(request):
+        return _auth_error()
     if not file.content_type:
         return JSONResponse({"error": "Missing Content-Type"}, status_code=400)
     ct = file.content_type.lower()
@@ -659,8 +715,17 @@ async def api_attachments(file: UploadFile = File(...)):
         logger.error("Upload write failed: %s", exc)
         return JSONResponse({"error": "Upload failed"}, status_code=500)
     url = f"/uploads/{final_name}"
-    md = f"![{final_name}]({url})"
-    return JSONResponse({"url": url, "markdown": md})
+    absolute_url = str(request.base_url).rstrip("/") + url
+    md = f"![{final_name}]({absolute_url})"
+    return JSONResponse({
+        "url": url,
+        "absolute_url": absolute_url,
+        "local_path": str(dest.resolve()),
+        "filename": final_name,
+        "mime_type": ct,
+        "size": len(raw),
+        "markdown": md,
+    })
 
 
 def _extract_favicon(html: str, base_url: str) -> str:
@@ -780,6 +845,69 @@ async def root(request: Request) -> Response:
         media_type="text/html",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@app.post("/api/run-python")
+async def api_run_python(request: Request) -> Response:
+    """Execute submitted Python code safely in a local venv.
+    Uses uv run to isolate and time-limit execution."""
+    if not _is_authenticated(request):
+        return _auth_error()
+    try:
+        body = await request.json()
+    except _json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    code = body.get("code", "")
+    if not isinstance(code, str):
+        return JSONResponse({"error": "code must be a string"}, status_code=400)
+    if not code.strip():
+        return JSONResponse({"output": "", "error": "Empty code"}, status_code=200)
+
+    # Safety: strip control characters / null bytes
+    code = code.replace("\x00", "")
+
+    import subprocess as sp
+    import tempfile
+    # Write code to a temp file and execute via uv
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            f.write(code)
+            f.flush()
+            tmp_path = f.name
+        # Build the uv run command
+        uv_bin = os.environ.get("UV_BIN", "uv")
+        cmd = [
+            uv_bin, "run", "--python", 
+            os.environ.get("HERMES_PROXY_RUN_PYTHON", sys.executable),
+            tmp_path,
+        ]
+        result = sp.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(Path.home()),
+        )
+        # Only return stdout + stderr (truncated if huge)
+        max_len = 5000
+        output = (result.stdout + "\n" + result.stderr).strip()
+        if len(output) > max_len:
+            output = output[:max_len] + f"\n... [{len(output) - max_len} chars truncated]"
+        return JSONResponse({
+            "output": output,
+            "error": None,
+            "returncode": result.returncode,
+        }, status_code=200)
+    except sp.TimeoutExpired:
+        return JSONResponse({"output": "", "error": "Execution timed out (30s limit)"}, status_code=200)
+    except Exception as exc:
+        logger.error("Error running python: %s", exc)
+        return JSONResponse({"output": "", "error": str(exc)}, status_code=200)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")

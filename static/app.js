@@ -6,6 +6,10 @@
   let _thinkingTimer = null;
   let _thinkingStartedAt = 0;
 
+  const ARTIFACT_LANGS = ['html', 'svg', 'mermaid', 'python', 'json', 'csv'];
+  const _artifactStore = new Map();
+  let _artifactMsgCounter = 0;
+
   // ── DOM refs ──
   const loginOverlay = document.getElementById('login-overlay');
   const appEl = document.getElementById('app');
@@ -24,6 +28,12 @@
   const sessionLostDismiss = document.getElementById('session-lost-dismiss');
   const logoutBtn = document.getElementById('logout-btn');
   const searchInput = document.getElementById('search-input');
+  const attachBtn = document.getElementById('attach-btn');
+  const fileInput = document.getElementById('file-input');
+  const attachmentPreviews = document.getElementById('attachment-previews');
+  const dragOverlay = document.getElementById('drag-overlay');
+
+  const pendingAttachments = [];
 
   // ── Utilities ──
   function closeSidebar() {
@@ -359,31 +369,83 @@
   });
 
   // ── Message rendering ──
-  function _attachCopyButtons(bubble) {
+  function _enhanceCodeBlocks(bubble) {
     bubble.querySelectorAll('pre').forEach(pre => {
-      // Don't double-add if already present
-      if (pre.querySelector('.copy-btn')) return;
-      const btn = document.createElement('button');
-      btn.className = 'copy-btn';
-      btn.textContent = 'Copy';
-      btn.addEventListener('click', async () => {
-        const code = pre.querySelector('code');
-        const text = code ? code.innerText : pre.innerText;
-        try {
-          await navigator.clipboard.writeText(text);
-          btn.textContent = 'Copied!';
-          btn.classList.add('copied');
-          setTimeout(() => {
-            btn.textContent = 'Copy';
-            btn.classList.remove('copied');
-          }, 2000);
-        } catch {
-          btn.textContent = 'Error';
-          setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+      pre.style.position = 'relative';
+      const code = pre.querySelector('code');
+      if (code && window.hljs && !code.dataset.highlighted) {
+        try { window.hljs.highlightElement(code); } catch {}
+      }
+      if (code && !pre.querySelector('.code-lang-label')) {
+        const cls = Array.from(code.classList).find(c => c.startsWith('language-'));
+        const lang = cls ? cls.replace('language-', '') : '';
+        if (lang) {
+          const label = document.createElement('span');
+          label.className = 'code-lang-label';
+          label.textContent = lang;
+          pre.appendChild(label);
         }
-      });
-      pre.appendChild(btn);
+      }
+      if (!pre.querySelector('.copy-btn')) {
+        const btn = document.createElement('button');
+        btn.className = 'copy-btn';
+        btn.textContent = 'Copy';
+        btn.addEventListener('click', async () => {
+          const text = code ? code.innerText : pre.innerText;
+          try {
+            await navigator.clipboard.writeText(text);
+            btn.textContent = 'Copied!';
+            btn.classList.add('copied');
+            setTimeout(() => {
+              btn.textContent = 'Copy';
+              btn.classList.remove('copied');
+            }, 2000);
+          } catch {
+            btn.textContent = 'Error';
+            setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+          }
+        });
+        pre.appendChild(btn);
+      }
     });
+  }
+
+  function _attachCopyButtons(bubble) {
+    _enhanceCodeBlocks(bubble);
+  }
+
+  /* ── Artifact helpers ── */
+
+  function _scanArtifacts(text, msgId) {
+    const regex = /```\s*(html|svg|mermaid|python|json|csv)(?:[^\n]*)\n([\s\S]*?)```/g;
+    let idx = 0;
+    for (const match of text.matchAll(regex)) {
+      const key = `${msgId}_${idx}`;
+      const lang = match[1];
+      const code = match[2];
+      if (!_artifactStore.has(key)) {
+        _artifactStore.set(key, { lang, code });
+        if (window.HermesProxy) {
+          try {
+            window.HermesProxy.emit('artifactDetected', { messageId: msgId, index: idx, lang, code });
+          } catch (e) {
+            console.error('Plugin error in artifactDetected:', e);
+          }
+        }
+      } else {
+        // Update code in place as streaming fills out the block. Re-emit so
+        // buttons can be restored after markdown re-renders replace <pre> nodes.
+        _artifactStore.get(key).code = code;
+        if (window.HermesProxy) {
+          try {
+            window.HermesProxy.emit('artifactDetected', { messageId: msgId, index: idx, lang, code });
+          } catch (e) {
+            console.error('Plugin error in artifactDetected:', e);
+          }
+        }
+      }
+      idx++;
+    }
   }
 
   function esc(str) {
@@ -408,13 +470,21 @@
   }
 
   function appendMessage(role, content, ts = null) {
+    // Increment counter for each message — used as the message ID for artifact keys
+    const msgId = ++_artifactMsgCounter;
+
     const msg = document.createElement('div');
     msg.className = `msg ${role}`;
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
+    bubble.dataset.rawContent = content || '';
     if (role === 'assistant') {
       bubble.innerHTML = content ? DOMPurify.sanitize(marked.parse(content)) : '';
-      _attachCopyButtons(bubble);
+      _enhanceCodeBlocks(bubble);
+      // Scan for artifact code blocks after rendering
+      if (content) {
+        _scanArtifacts(content, msgId);
+      }
     } else {
       bubble.textContent = content || '';
     }
@@ -424,10 +494,160 @@
     }
     msg.appendChild(bubble);
     thread.appendChild(msg);
+
+    // Build a stable ref-id from the counter so plugins can locate the bubble
+    msg.dataset.msgRef = String(msgId);
+    bubble.dataset.msgRef = String(msgId);
+
+    _attachMsgActions(msg, bubble, role, content || '');
     if (window.HermesProxy) window.HermesProxy.emit('messageRendered', bubble, { role, content, ts });
     scrollToBottom();
     return bubble;
   }
+
+  function _showToast(text, isError = false) {
+    const toast = document.getElementById('toast');
+    if (!toast) return;
+    toast.textContent = text;
+    toast.classList.toggle('error', isError);
+    toast.classList.add('visible');
+    setTimeout(() => toast.classList.remove('visible'), 2500);
+  }
+
+  function _copyMessage(bubble) {
+    const text = bubble.innerText;
+    navigator.clipboard.writeText(text).then(() => {
+      _showToast('Copied to clipboard');
+    }).catch(() => {
+      _showToast('Copy failed', true);
+    });
+  }
+
+  function _regenerateMessage(msgEl) {
+    const threadEl = document.getElementById('thread');
+    const msgs = Array.from(threadEl.querySelectorAll('.msg'));
+    const idx = msgs.indexOf(msgEl);
+    if (idx <= 0) return;
+    let prevUserText = '';
+    for (let i = idx - 1; i >= 0; i--) {
+      if (msgs[i].classList.contains('user')) {
+        const bubble = msgs[i].querySelector('.bubble');
+        if (bubble) {
+          prevUserText = bubble.dataset.rawContent || bubble.innerText;
+        }
+        break;
+      }
+    }
+    if (!prevUserText) return;
+    for (let i = msgs.length - 1; i >= idx; i--) {
+      msgs[i].remove();
+    }
+    sendMessage({ text: prevUserText, skipUserAppend: true });
+  }
+
+  function _startEdit(msgEl, bubble, content) {
+    if (bubble.querySelector('.edit-textarea')) return;
+    const originalContent = content || '';
+    const ta = document.createElement('textarea');
+    ta.className = 'edit-textarea';
+    ta.value = originalContent;
+    ta.rows = Math.min(10, Math.max(2, originalContent.split('\\n').length));
+
+    const submit = () => {
+      const newText = ta.value.trim();
+      if (!newText) {
+        ta.remove();
+        return;
+      }
+      bubble.textContent = newText;
+      bubble.dataset.rawContent = newText;
+      _attachMsgActions(msgEl, bubble, 'user', newText);
+      const threadEl = document.getElementById('thread');
+      const msgs = Array.from(threadEl.querySelectorAll('.msg'));
+      const idx = msgs.indexOf(msgEl);
+      for (let i = msgs.length - 1; i > idx; i--) {
+        msgs[i].remove();
+      }
+      sendMessage({ text: newText, skipUserAppend: true });
+    };
+
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        submit();
+      }
+      if (e.key === 'Escape') {
+        ta.remove();
+      }
+    });
+    ta.addEventListener('blur', submit);
+
+    bubble.innerHTML = '';
+    bubble.appendChild(ta);
+    ta.focus();
+  }
+
+  function _attachMsgActions(msg, bubble, role, content) {
+    if (msg.querySelector('.msg-actions')) return;
+    const actions = document.createElement('div');
+    actions.className = 'msg-actions';
+
+    if (role === 'user') {
+      const editBtn = document.createElement('button');
+      editBtn.className = 'msg-action-btn';
+      editBtn.textContent = 'Edit';
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _startEdit(msg, bubble, content);
+      });
+      actions.appendChild(editBtn);
+    } else {
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'msg-action-btn';
+      copyBtn.textContent = 'Copy';
+      copyBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _copyMessage(bubble);
+      });
+      actions.appendChild(copyBtn);
+
+      const regenBtn = document.createElement('button');
+      regenBtn.className = 'msg-action-btn';
+      regenBtn.textContent = 'Regenerate';
+      regenBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _regenerateMessage(msg);
+      });
+      actions.appendChild(regenBtn);
+    }
+
+    msg.appendChild(actions);
+  }
+
+  // Global click-away to dismiss visible action menus on mobile
+  document.addEventListener('click', (e) => {
+    const visible = document.querySelector('.msg.actions-visible');
+    if (visible && !visible.contains(e.target)) {
+      visible.classList.remove('actions-visible');
+    }
+  });
+
+  // Mobile long-press to show actions
+  let _lpTimer = null;
+  thread.addEventListener('touchstart', (e) => {
+    const msg = e.target.closest('.msg');
+    if (!msg || msg.id === 'thinking-indicator') return;
+    _lpTimer = setTimeout(() => {
+      document.querySelectorAll('.msg.actions-visible').forEach(m => m.classList.remove('actions-visible'));
+      msg.classList.add('actions-visible');
+    }, 500);
+  }, { passive: true });
+  thread.addEventListener('touchend', () => {
+    if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; }
+  }, { passive: true });
+  thread.addEventListener('touchmove', () => {
+    if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; }
+  }, { passive: true });
 
   function emitThinking(event, payload) {
     try {
@@ -516,12 +736,135 @@
     _thinkingStartedAt = 0;
   }
 
+  // ── Attachments ──
+  function _displayAttachmentName(filename) {
+    const name = filename || 'image';
+    const dot = name.lastIndexOf('.');
+    return dot > 0 ? name.slice(0, dot) : name;
+  }
+
+  function _middleEllipsis(name, max = 28) {
+    if (!name || name.length <= max) return name || 'image';
+    const front = Math.ceil((max - 1) * 0.66);
+    const back = Math.max(3, max - 1 - front);
+    return `${name.slice(0, front)}…${name.slice(-back)}`;
+  }
+
+  function _renderAttachmentPreviews() {
+    attachmentPreviews.innerHTML = '';
+    pendingAttachments.forEach((att, idx) => {
+      const item = document.createElement('div');
+      item.className = 'attachment-row';
+      item.title = att.error ? `${att.file.name} · ${att.error}` : att.file.name;
+
+      const icon = document.createElement('span');
+      icon.className = 'attachment-icon';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.textContent = '📎';
+      item.appendChild(icon);
+
+      const name = document.createElement('span');
+      name.className = 'attachment-name';
+      name.textContent = _middleEllipsis(_displayAttachmentName(att.file.name));
+      item.appendChild(name);
+
+      const remove = document.createElement('button');
+      remove.className = 'attachment-remove';
+      remove.type = 'button';
+      remove.textContent = '×';
+      remove.title = 'Remove attachment';
+      remove.setAttribute('aria-label', `Remove ${att.file.name}`);
+      remove.addEventListener('click', () => {
+        const [removed] = pendingAttachments.splice(idx, 1);
+        if (removed && removed.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+        _renderAttachmentPreviews();
+      });
+      item.appendChild(remove);
+
+      attachmentPreviews.appendChild(item);
+    });
+  }
+
+  async function _uploadAttachment(att) {
+    const form = new FormData();
+    form.append('file', att.file);
+    try {
+      att.progress = 35;
+      _renderAttachmentPreviews();
+      const res = await fetch('/api/attachments', { method: 'POST', body: form });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      att.url = data.url;
+      att.markdown = data.markdown;
+      att.uploaded = true;
+      att.progress = 100;
+    } catch (err) {
+      att.error = err.message || 'Upload failed';
+    } finally {
+      _renderAttachmentPreviews();
+    }
+  }
+
+  function _queueFiles(files) {
+    const images = Array.from(files || []).filter(f => f.type && f.type.startsWith('image/'));
+    for (const file of images) {
+      const att = { file, previewUrl: URL.createObjectURL(file), uploaded: false, progress: 0, error: '' };
+      pendingAttachments.push(att);
+      _uploadAttachment(att);
+    }
+    _renderAttachmentPreviews();
+  }
+
+  if (attachBtn && fileInput) {
+    attachBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+      _queueFiles(fileInput.files);
+      fileInput.value = '';
+    });
+  }
+
+  document.addEventListener('dragover', (e) => {
+    if (!Array.from(e.dataTransfer?.items || []).some(i => i.kind === 'file')) return;
+    e.preventDefault();
+    if (dragOverlay) dragOverlay.classList.add('active');
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (e.clientX === 0 || e.clientY === 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+      if (dragOverlay) dragOverlay.classList.remove('active');
+    }
+  });
+  document.addEventListener('drop', (e) => {
+    if (!e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    if (dragOverlay) dragOverlay.classList.remove('active');
+    _queueFiles(e.dataTransfer.files);
+  });
+
+  msgInput.addEventListener('paste', (e) => {
+    const files = Array.from(e.clipboardData?.files || []).filter(f => f.type && f.type.startsWith('image/'));
+    if (files.length) _queueFiles(files);
+  });
+
   // ── Send ──
   sendBtn.addEventListener('click', sendMessage);
 
-  async function sendMessage() {
-    const text = msgInput.value.trim();
-    if (!text || streaming) return;
+  async function sendMessage(options = {}) {
+    const explicitText = typeof options === 'string' ? options : options.text;
+    const skipUserAppend = Boolean(options && options.skipUserAppend);
+    const text = (explicitText !== undefined ? explicitText : msgInput.value).trim();
+    const readyAttachments = pendingAttachments.filter(a => a.uploaded && !a.error).map(a => ({ url: a.url, markdown: a.markdown }));
+    const uploading = pendingAttachments.some(a => !a.uploaded && !a.error);
+    if (streaming || (!text && readyAttachments.length === 0)) return;
+    if (uploading) {
+      _showToast('Still uploading images…', true);
+      return;
+    }
+    const errored = pendingAttachments.filter(a => a.error);
+    if (errored.length && readyAttachments.length === 0 && !text) {
+      _showToast('Remove failed uploads before sending', true);
+      return;
+    }
+
     try {
       window.HermesProxy && window.HermesProxy.emit('beforeSend', text);
     } catch (e) {
@@ -534,22 +877,32 @@
     msgInput.style.height = 'auto';
     dismissSessionLostBanner();
 
-    // Optimistic session entry for new sessions — replaced by loadSessions() at stream end
+    const displayText = text || '(image attachment)';
     if (!currentSessionId && !searchInput.value.trim()) {
-      _addOptimisticSession(text);
+      _addOptimisticSession(displayText);
     }
     autoScrollLocked = true;
-    appendMessage('user', text, Date.now());
+    if (!skipUserAppend) {
+      const attachmentText = readyAttachments.map(a => a.markdown).join('\n');
+      appendMessage('user', attachmentText ? `${attachmentText}\n\n${text}`.trim() : text, Date.now());
+    }
+
+    // Clear successfully queued attachments after they are included in the request.
+    for (const att of pendingAttachments.splice(0)) {
+      if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+    }
+    _renderAttachmentPreviews();
     showThinking();
 
     let assistantBubble = null;
     let assistantContent = '';
+    let streamedSessionId = null;
 
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, session_id: currentSessionId }),
+        body: JSON.stringify({ message: text, session_id: currentSessionId, attachments: readyAttachments }),
       });
 
       if (!res.ok) {
@@ -558,7 +911,6 @@
         return;
       }
 
-      // Capture session id from response headers
       const newSessionId = res.headers.get('X-Hermes-Session-Id');
       if (newSessionId) {
         const wasNew = !currentSessionId;
@@ -572,105 +924,80 @@
       const decoder = new TextDecoder();
       let buffer = '';
 
+      const processEvent = async (eventType, dataLine) => {
+        if (!dataLine || dataLine === '[DONE]') return;
+        let json;
+        try { json = JSON.parse(dataLine); } catch { return; }
+        if (eventType === 'session' && json.hermes_session_id) {
+          streamedSessionId = json.hermes_session_id;
+          currentSessionId = json.hermes_session_id;
+          localStorage.setItem('hermes-session-id', currentSessionId);
+          await loadSessions();
+          updateActiveSession();
+          return;
+        }
+        if (eventType === 'hermes.tool.progress' && json.tool) {
+          updateThinking(json.label || json.tool, json);
+          return;
+        }
+        const delta = json?.choices?.[0]?.delta?.content;
+        if (!delta) return;
+        if (!assistantBubble) {
+          removeThinking();
+          const msg = document.createElement('div');
+          msg.className = 'msg assistant';
+          const msgId = ++_artifactMsgCounter;
+          msg.dataset.msgRef = String(msgId);
+          assistantBubble = document.createElement('div');
+          assistantBubble.className = 'bubble';
+          assistantBubble.dataset.ts = formatTime(Date.now());
+          assistantBubble.dataset.msgRef = String(msgId);
+          assistantBubble.dataset.rawContent = '';
+          msg.appendChild(assistantBubble);
+          thread.appendChild(msg);
+        }
+        assistantContent += delta;
+        assistantBubble.dataset.rawContent = assistantContent;
+        assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
+        _enhanceCodeBlocks(assistantBubble);
+        _scanArtifacts(assistantContent, Number(assistantBubble.dataset.msgRef));
+        maybeScrollToBottom();
+      };
+
+      const drainBuffer = async (final = false) => {
+        const parts = buffer.split('\n\n');
+        buffer = final ? '' : parts.pop();
+        for (const part of final ? parts.filter(Boolean) : parts) {
+          const lines = part.split('\n');
+          let eventType = 'message';
+          const dataLines = [];
+          for (const line of lines) {
+            if (line.startsWith('event:')) eventType = line.slice(6).trim();
+            else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+          }
+          await processEvent(eventType, dataLines.join('\n'));
+        }
+      };
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-
         buffer += decoder.decode(value, { stream: true });
-
-        // Process complete SSE events (split on double newline)
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop(); // keep incomplete last part
-
-        for (const part of parts) {
-          const lines = part.split('\n');
-          let eventType = 'message';
-          let dataLine = null;
-          for (const line of lines) {
-            if (line.startsWith('event:')) {
-              eventType = line.slice(6).trim();
-            } else if (line.startsWith('data:')) {
-              dataLine = line.slice(5).trim();
-            }
-          }
-          if (!dataLine || dataLine === '[DONE]') continue;
-          try {
-            const json = JSON.parse(dataLine);
-          if (eventType === 'session' && json.hermes_session_id) {
-            // Capture session ID emitted by proxy at end of stream
-            currentSessionId = json.hermes_session_id;
-            localStorage.setItem('hermes-session-id', currentSessionId);
-            await loadSessions();
-            updateActiveSession();
-          } else if (eventType === 'hermes.tool.progress' && json.tool) {
-            const label = json.label || json.tool;
-            updateThinking(label, json);
-          } else {
-            const delta = json?.choices?.[0]?.delta?.content;
-            if (delta) {
-              if (!assistantBubble) {
-                removeThinking();
-                const msg = document.createElement('div');
-                msg.className = 'msg assistant';
-                assistantBubble = document.createElement('div');
-                assistantBubble.className = 'bubble';
-                assistantBubble.dataset.ts = formatTime(Date.now());
-                msg.appendChild(assistantBubble);
-                thread.appendChild(msg);
-              }
-              assistantContent += delta;
-              assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
-              maybeScrollToBottom();
-            }
-          }
-          } catch {}
-        }
+        await drainBuffer(false);
       }
+      if (buffer) await drainBuffer(true);
 
-      // Process any remaining buffer
-      if (buffer) {
-        const lines = buffer.split('\n');
-        let eventType = 'message';
-        let dataLine = null;
-        for (const line of lines) {
-          if (line.startsWith('event:')) {
-            eventType = line.slice(6).trim();
-          } else if (line.startsWith('data:')) {
-            dataLine = line.slice(5).trim();
-          }
-        }
-        if (dataLine && dataLine !== '[DONE]') {
-          try {
-            const json = JSON.parse(dataLine);
-            if (eventType === 'session' && json.hermes_session_id) {
-              currentSessionId = json.hermes_session_id;
-              localStorage.setItem('hermes-session-id', currentSessionId);
-              await loadSessions();
-              updateActiveSession();
-            } else if (eventType === 'hermes.tool.progress' && json.tool) {
-              updateThinking(json.label || json.tool, json);
-            } else {
-              const delta = json?.choices?.[0]?.delta?.content;
-              if (delta) {
-                assistantContent += delta;
-                if (assistantBubble) {
-                  assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
-                  maybeScrollToBottom();
-                }
-              }
-            }
-          } catch {}
-        }
-      }
-
-      // Final render (ensure complete markdown)
+      // Final render (ensure complete markdown and restore buttons after stream re-renders)
       if (assistantBubble && assistantContent) {
+        assistantBubble.dataset.rawContent = assistantContent;
         assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
-        _attachCopyButtons(assistantBubble);
+        _enhanceCodeBlocks(assistantBubble);
+        _scanArtifacts(assistantContent, Number(assistantBubble.dataset.msgRef));
+        _attachMsgActions(assistantBubble.parentElement, assistantBubble, 'assistant', assistantContent);
+        if (window.HermesProxy) window.HermesProxy.emit('messageRendered', assistantBubble, { role: 'assistant', content: assistantContent, ts: Date.now() });
       }
 
-      // Refresh sessions after first message in new session
-      if (newSessionId) await loadSessions();
+      if (newSessionId || streamedSessionId) await loadSessions();
 
     } catch (err) {
       removeThinking();
@@ -678,6 +1005,7 @@
         appendMessage('assistant', '_(Stream error)_');
       }
     } finally {
+      removeThinking();
       streaming = false;
       sendBtn.disabled = false;
       msgInput.focus();
@@ -686,4 +1014,189 @@
 
   // ── Boot ──
   checkAuth();
+
+  /* ── Artifact panel ── */
+  (function () {
+    const panel = document.getElementById('artifact-panel');
+    const titleEl = document.getElementById('artifact-panel-title');
+    const contentEl = document.getElementById('artifact-panel-content');
+    if (!panel || !contentEl) return;
+
+    let currentCode = '';
+    let currentLang = '';
+
+    // Hook close button
+    const closeBtn = document.getElementById('artifact-close');
+    if (closeBtn) closeBtn.addEventListener('click', closePanel);
+
+    // Hook copy button
+    const copyBtn = document.getElementById('artifact-copy');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(currentCode);
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => (copyBtn.textContent = 'Copy'), 1500);
+        } catch {
+          copyBtn.textContent = 'Failed';
+          setTimeout(() => (copyBtn.textContent = 'Copy'), 1500);
+        }
+      });
+    }
+
+    // Hook download button
+    const dlBtn = document.getElementById('artifact-download');
+    if (dlBtn) {
+      dlBtn.addEventListener('click', () => {
+        const map = { html: 'html', svg: 'svg', mermaid: 'mmd', python: 'py', json: 'json', csv: 'csv' };
+        const ext = map[currentLang] || 'txt';
+        const blob = new Blob([currentCode], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `artifact.${ext}`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    // Hook run button (Python only)
+    const runBtn = document.getElementById('artifact-run');
+    if (runBtn) {
+      runBtn.addEventListener('click', async () => {
+        if (!currentCode || currentLang !== 'python') return;
+        runBtn.disabled = true;
+        runBtn.textContent = 'Running…';
+        try {
+          const res = await fetch('/api/run-python', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: currentCode }),
+          });
+          const data = await res.json();
+          if (data.error) {
+            setContent(`
+              <div class="artifact-code-wrap">
+                <pre style="color:#ff4466"><code>${esc(data.error)}</code></pre>
+              </div>
+            `, currentCode, currentLang);
+          } else {
+            setContent(`
+              <div class="artifact-code-wrap">
+                <pre><code>${esc(data.output || '(no output)')}</code></pre>
+              </div>
+            `, currentCode, currentLang);
+          }
+        } catch (e) {
+          setContent(`
+            <div class="artifact-code-wrap">
+              <pre style="color:#ff4466"><code>Run failed: ${esc(e.message)}</code></pre>
+            </div>
+          `, currentCode, currentLang);
+        } finally {
+          runBtn.disabled = false;
+          runBtn.textContent = 'Run';
+        }
+      });
+    }
+
+    function closePanel() {
+      panel.classList.remove('open');
+    }
+
+    function openPanel() {
+      panel.classList.add('open');
+    }
+
+    // Toggle Run button visibility based on language
+    function updateRunButton(lang) {
+      if (runBtn) runBtn.style.display = lang === 'python' ? 'inline-block' : 'none';
+    }
+
+    function setContent(html, rawCode, lang) {
+      currentCode = rawCode || '';
+      currentLang = lang || '';
+      contentEl.innerHTML = html;
+      updateRunButton(lang);
+    }
+
+    function renderArtifact({ lang, code }) {
+      if (titleEl) titleEl.textContent = `Artifact · ${lang}`;
+      openPanel();
+
+      if (lang === 'html') {
+        const blob = new Blob([code], { type: 'text/html' });
+        const src = URL.createObjectURL(blob);
+        setContent(`
+          <div class="artifact-iframe-wrap">
+            <iframe sandbox="allow-scripts" src="${src}"></iframe>
+          </div>
+        `, code, lang);
+      } else if (lang === 'svg') {
+        const blob = new Blob([code], { type: 'image/svg+xml' });
+        const src = URL.createObjectURL(blob);
+        setContent(`
+          <div class="artifact-iframe-wrap">
+            <iframe sandbox="allow-scripts" src="${src}"></iframe>
+          </div>
+        `, code, lang);
+      } else if (lang === 'mermaid') {
+        try {
+          if (window.mermaid) {
+            const id = 'mm-' + Math.random().toString(36).slice(2);
+            setContent(`
+              <div class="mermaid" id="${id}">${esc(code)}</div>
+            `, code, lang);
+            mermaid.init(undefined, '#' + id);
+          } else {
+            setContent('<div class="artifact-empty">Mermaid library not loaded</div>', code, lang);
+          }
+        } catch (e) {
+          setContent('<div class="artifact-empty">Mermaid render error: ' + esc(e.message) + '</div>', code, lang);
+        }
+      } else {
+        setContent(`
+          <div class="artifact-code-wrap">
+            <pre><code class="language-${lang}">${esc(code)}</code></pre>
+          </div>
+        `, code, lang);
+      }
+    }
+
+    // Expose a lightweight API on window so plugins / "Open in Artifact" buttons can trigger it
+    window.HermesArtifacts = {
+      open: renderArtifact,
+      close: closePanel,
+    };
+  })();
+
+  // Inject "Open in Artifact" inline buttons on every assistant bubble after streaming ends
+  (function listenArtifactClicks() {
+    if (!window.HermesProxy) return;
+    window.HermesProxy.on('artifactDetected', ({ messageId, index, lang }) => {
+      // Find the assistant bubble that carries this msgRef
+      const bubble = document.querySelector(`.msg.assistant .bubble[data-msg-ref="${messageId}"]`);
+      if (!bubble) return;
+      // Find the <code> block with this specific language inside the bubble
+      const pre = bubble.querySelectorAll('pre')[index];
+      if (!pre) return;
+      // Skip if button already injected
+      if (pre.querySelector('.open-artifact-btn')) return;
+      const btn = document.createElement('button');
+      btn.className = 'open-artifact-btn';
+      btn.textContent = 'Open in Artifact';
+      btn.style.cssText = 'position:absolute; top:4px; right:72px; background:transparent; border:1px solid var(--accent); color:var(--accent); border-radius:3px; padding:2px 8px; font-size:11px; font-family:inherit; cursor:pointer;';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const key = `${messageId}_${index}`;
+        if (!_artifactStore.has(key)) return;
+        const { lang: l, code } = _artifactStore.get(key);
+        window.HermesArtifacts.open({ lang: l, code });
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+  })();
 })();
