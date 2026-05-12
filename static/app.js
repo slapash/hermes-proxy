@@ -32,6 +32,7 @@
   const fileInput = document.getElementById('file-input');
   const attachmentPreviews = document.getElementById('attachment-previews');
   const dragOverlay = document.getElementById('drag-overlay');
+  const loadMoreBtn = document.getElementById('load-more-btn');
 
   const pendingAttachments = [];
 
@@ -67,9 +68,27 @@
   function formatDate(ts) {
     if (!ts) return '';
     try {
-      const d = new Date(ts.includes('T') || ts.includes('Z') ? ts : ts + 'Z');
+      // ts can be a Unix float (from DB) or an ISO string
+      const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts.includes('T') || ts.includes('Z') ? ts : ts + 'Z');
       return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
     } catch { return ''; }
+  }
+
+  function dateGroupLabel(ts) {
+    if (!ts) return 'Older';
+    try {
+      // ts can be a Unix float (from DB) or an ISO string
+      const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts.includes('T') || ts.includes('Z') ? ts : ts * 1000);
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const yesterday = new Date(today.getTime() - 86400000);
+      const weekAgo = new Date(today.getTime() - 6 * 86400000);
+      const sessionDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      if (sessionDay.getTime() === today.getTime()) return 'Today';
+      if (sessionDay.getTime() === yesterday.getTime()) return 'Yesterday';
+      if (sessionDay >= weekAgo) return 'This Week';
+      return 'Older';
+    } catch { return 'Older'; }
   }
 
   // Auto-resize textarea
@@ -169,17 +188,30 @@
   });
 
   // ── Sessions ──
-  async function loadSessions() {
+  let sessionsTotalCount = 0;
+  let sessionsLoadedCount = 0;
+  let sessionsOffset = 0;
+
+  async function loadSessions(append = false) {
     try {
-      const res = await fetch('/api/sessions');
+      if (!append) sessionsOffset = 0;
+      const url = '/api/sessions?offset=' + sessionsOffset + '&limit=30';
+      const res = await fetch(url);
       if (!res.ok) return;
       const sessions = await res.json();
+      sessionsTotalCount = parseInt(res.headers.get('X-Total-Count') || '0', 10);
+      sessionsLoadedCount = sessions.length;
       // Don't overwrite active search results
       if (!searchInput.value.trim()) {
-        renderSessions(sessions);
+        if (append) {
+          appendToSessionList(sessions);
+        } else {
+          renderSessions(sessions);
+        }
       }
       // Always update the active highlight (works on whatever is currently in the list)
       updateActiveSession();
+      updateLoadMoreButton();
     } catch {}
   }
 
@@ -236,13 +268,162 @@
     });
   }
 
+  async function _archiveSession(sessionId, el) {
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, { method: 'PUT' });
+      if (res.ok) {
+        el.style.transition = 'opacity .2s';
+        el.style.opacity = '0';
+        setTimeout(() => {
+          el.remove();
+          _cleanupEmptyGroupHeaders();
+          if (currentSessionId === sessionId) {
+            currentSessionId = null;
+            thread.innerHTML = '';
+          }
+          updateLoadMoreButton();
+        }, 200);
+      } else {
+        _showToast('Archive failed', true);
+      }
+    } catch { _showToast('Archive failed', true); }
+  }
+
+  async function _deleteSession(sessionId, el) {
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+      if (res.ok) {
+        el.style.transition = 'opacity .2s';
+        el.style.opacity = '0';
+        setTimeout(() => {
+          el.remove();
+          _cleanupEmptyGroupHeaders();
+          if (currentSessionId === sessionId) {
+            currentSessionId = null;
+            thread.innerHTML = '';
+          }
+          updateLoadMoreButton();
+        }, 200);
+      } else if (res.status === 404) {
+        _showToast('Session not found', true);
+      } else {
+        _showToast('Delete failed', true);
+      }
+    } catch { _showToast('Delete failed', true); }
+  }
+
+  function _addSessionActions(el, sessionId) {
+    const actions = document.createElement('div');
+    actions.className = 'session-actions';
+    const menuBtn = document.createElement('button');
+    menuBtn.className = 'session-action-btn';
+    menuBtn.textContent = '⋮';
+    menuBtn.title = 'More actions';
+    menuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Toggle: if actions are already expanded, collapse them
+      if (actions.dataset.expanded === '1') {
+        actions.innerHTML = '';
+        actions.appendChild(menuBtn);
+        delete actions.dataset.expanded;
+        return;
+      }
+      actions.dataset.expanded = '1';
+      actions.innerHTML = '';
+      const arBtn = document.createElement('button');
+      arBtn.className = 'session-action-btn';
+      arBtn.textContent = '📦';
+      arBtn.title = 'Archive';
+      arBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        _archiveSession(sessionId, el);
+      });
+      const delBtn = document.createElement('button');
+      delBtn.className = 'session-action-btn danger';
+      delBtn.textContent = '🗑';
+      delBtn.title = 'Delete';
+      let confirmTimer = null;
+      delBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (delBtn.dataset.confirmed === '1') {
+          // Confirmed — actually delete
+          clearTimeout(confirmTimer);
+          _deleteSession(sessionId, el);
+          return;
+        }
+        // First click — ask for confirmation
+        delBtn.textContent = '✓';
+        delBtn.title = 'Confirm delete';
+        delBtn.dataset.confirmed = '1';
+        confirmTimer = setTimeout(() => {
+          delBtn.textContent = '🗑';
+          delBtn.title = 'Delete';
+          delete delBtn.dataset.confirmed;
+        }, 3000);
+      });
+      actions.appendChild(arBtn);
+      actions.appendChild(delBtn);
+      actions.appendChild(menuBtn);
+      // Collapse menu when clicking elsewhere (deferred to avoid same-event capture)
+      setTimeout(() => {
+        const onOutside = (evt) => {
+          if (!actions.contains(evt.target)) {
+            actions.innerHTML = '';
+            actions.appendChild(menuBtn);
+            delete actions.dataset.expanded;
+          }
+          document.removeEventListener('click', onOutside, true);
+        };
+        document.addEventListener('click', onOutside, true);
+      }, 0);
+    });
+    actions.appendChild(menuBtn);
+    el.appendChild(actions);
+  }
+
+  function _cleanupEmptyGroupHeaders() {
+    const headers = sessionList.querySelectorAll('.session-group-header');
+    for (const h of headers) {
+      const next = h.nextElementSibling;
+      if (!next || (next.classList.contains('session-group-header') || next.id === 'load-more-btn')) {
+        h.remove();
+      }
+    }
+  }
+
   function renderSessions(sessions, searchMode = false) {
     sessionList.innerHTML = '';
+    if (sessions.length === 0 && !searchMode) {
+      const empty = document.createElement('div');
+      empty.className = 'session-empty';
+      empty.textContent = 'No conversations yet';
+      sessionList.appendChild(empty);
+      return;
+    }
+    if (sessions.length === 0 && searchMode) {
+      const empty = document.createElement('div');
+      empty.className = 'session-empty';
+      empty.textContent = 'No results';
+      sessionList.appendChild(empty);
+      return;
+    }
+    let lastGroup = '';
     for (const s of sessions) {
+      if (!searchMode) {
+        const group = dateGroupLabel(s.started_at);
+        if (group !== lastGroup) {
+          const header = document.createElement('div');
+          header.className = 'session-group-header';
+          header.textContent = group;
+          sessionList.appendChild(header);
+          lastGroup = group;
+        }
+      }
       const el = document.createElement('div');
       el.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
       el.dataset.id = s.id;
       const title = s.title || s.id.slice(0, 16) + '…';
+      el.title = title;
       el.innerHTML = `<div class="session-title">${esc(title)}</div>
         <div class="session-date">${esc(formatDate(s.started_at))}</div>`;
       if (searchMode && s.match_snippet) {
@@ -270,6 +451,7 @@
           _renameSession(s.id, titleEl);
         }
       });
+      _addSessionActions(el, s.id);
       sessionList.appendChild(el);
     }
     sessionList.scrollTop = 0;
@@ -282,6 +464,66 @@
       }
     }
   }
+
+  function appendToSessionList(sessions) {
+    // Determine last date group already in the list
+    const headers = sessionList.querySelectorAll('.session-group-header');
+    let lastGroup = headers.length ? headers[headers.length - 1].textContent : '';
+    for (const s of sessions) {
+      const group = dateGroupLabel(s.started_at);
+      if (group !== lastGroup) {
+        const header = document.createElement('div');
+        header.className = 'session-group-header';
+        header.textContent = group;
+        sessionList.appendChild(header);
+        lastGroup = group;
+      }
+      const el = document.createElement('div');
+      el.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
+      el.dataset.id = s.id;
+      const title = s.title || s.id.slice(0, 16) + '…';
+      el.title = title;
+      el.innerHTML = `<div class="session-title">${esc(title)}</div>
+        <div class="session-date">${esc(formatDate(s.started_at))}</div>`;
+      el.addEventListener('click', () => { loadSession(s.id); });
+      const titleEl = el.querySelector('.session-title');
+      titleEl.addEventListener('dblclick', e => {
+        e.stopPropagation();
+        _renameSession(s.id, titleEl);
+      });
+      titleEl.addEventListener('click', e => {
+        if (currentSessionId === s.id && titleEl.isConnected) {
+          e.stopPropagation();
+          _renameSession(s.id, titleEl);
+        }
+      });
+      _addSessionActions(el, s.id);
+      sessionList.appendChild(el);
+    }
+    if (window.HermesProxy) {
+      try {
+        window.HermesProxy.emit('sessionListRendered', sessionList);
+      } catch (e) {
+        console.error('Plugin error in sessionListRendered:', e);
+      }
+    }
+  }
+
+  function updateLoadMoreButton() {
+    const loaded = sessionList.querySelectorAll('.session-item').length;
+    const remaining = sessionsTotalCount - loaded;
+    if (remaining > 0) {
+      loadMoreBtn.style.display = 'block';
+      loadMoreBtn.textContent = `Load more (${remaining} older)`;
+    } else {
+      loadMoreBtn.style.display = 'none';
+    }
+  }
+
+  loadMoreBtn.addEventListener('click', () => {
+    sessionsOffset = sessionList.querySelectorAll('.session-item').length;
+    loadSessions(true);
+  });
 
   function _addOptimisticSession(firstMsg) {
     // Remove any existing optimistic entry first

@@ -13,11 +13,10 @@ APP_ROOT = Path('/home/hermes/apps/hermes-proxy')
 
 def test_emit_isolates_handler_errors():
     """If one handler throws, others must still run."""
-    # Extract inline HermesProxy script from index.html
-    html = (APP_ROOT / "static" / "index.html").read_text()
-    start = html.find("window.HermesProxy = {")
-    end = html.find("</script>", start)
-    proxy_code = html[start:end]
+    # Extract HermesProxy script from hermes-proxy.js (the actual implementation)
+    proxy_code = (APP_ROOT / "static" / "hermes-proxy.js").read_text()
+    # Strip the leading comment line(s) if present to keep it clean
+    proxy_code = proxy_code.strip()
     
     js = f"""
 var window = {{}};

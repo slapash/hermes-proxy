@@ -13,7 +13,11 @@ def _login(client):
 
 
 class _FakeStreamResponse:
-    headers = {"x-hermes-session-id": "api-feedface12345678"}
+    status_code = 200
+    headers = {
+        "content-type": "text/event-stream",
+        "x-hermes-session-id": "api-feedface12345678",
+    }
 
     async def __aenter__(self):
         return self
@@ -90,3 +94,55 @@ def test_upload_allows_images_above_one_mb(client, tmp_path):
     assert data["local_path"].startswith(str(server._UPLOADS_DIR.resolve()))
     assert data["absolute_url"].startswith("http://testserver/uploads/")
     assert Path(data["local_path"]).exists()
+
+
+def test_first_chat_reassigns_pending_uploads_to_new_session(monkeypatch, tmp_path):
+    meta_db = tmp_path / "proxy_meta.db"
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    conn = server.sqlite3.connect(meta_db)
+    conn.execute(
+        "CREATE TABLE session_meta (session_id TEXT PRIMARY KEY, custom_name TEXT NOT NULL, "
+        "updated_at REAL NOT NULL, archived INTEGER NOT NULL DEFAULT 0)"
+    )
+    conn.execute(
+        "CREATE TABLE uploads (filename TEXT PRIMARY KEY, size INTEGER NOT NULL, "
+        "mime_type TEXT NOT NULL, uploaded_at REAL NOT NULL, session_id TEXT, token TEXT)"
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
+    monkeypatch.setattr(server, "_UPLOADS_DIR", uploads_dir)
+    monkeypatch.setattr(server.httpx, "AsyncClient", _FakeAsyncClient)
+
+    client = TestClient(server.app)
+    _login(client)
+    upload = client.post(
+        "/api/attachments",
+        files={"file": ("cat.png", b"\x89PNG\r\n\x1a\n" + b"fake image", "image/png")},
+    )
+    assert upload.status_code == 200
+    attachment = upload.json()
+
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": "describe it",
+            "attachments": [{
+                "url": attachment["url"],
+                "markdown": attachment["markdown"],
+                "filename": attachment["filename"],
+                "mime_type": attachment["mime_type"],
+            }],
+        },
+    )
+    assert resp.status_code == 200
+
+    conn = server.sqlite3.connect(meta_db)
+    row = conn.execute(
+        "SELECT session_id FROM uploads WHERE filename = ?",
+        (attachment["filename"],),
+    ).fetchone()
+    conn.close()
+    assert row[0] == "api-feedface12345678"

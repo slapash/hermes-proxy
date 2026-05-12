@@ -71,11 +71,12 @@ def test_api_sessions_groups_compression_children_by_root_latest_leaf(tmp_path, 
     _make_state_db(state_db)
     meta_conn = sqlite3.connect(meta_db)
     meta_conn.execute(
-        "CREATE TABLE session_meta (session_id TEXT PRIMARY KEY, custom_name TEXT)"
+        "CREATE TABLE session_meta (session_id TEXT PRIMARY KEY, custom_name TEXT NOT NULL, "
+        "updated_at REAL NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0)"
     )
     meta_conn.execute(
-        "INSERT INTO session_meta (session_id, custom_name) VALUES (?, ?)",
-        ("root-a", "Renamed root conversation"),
+        "INSERT INTO session_meta (session_id, custom_name, updated_at) VALUES (?, ?, ?)",
+        ("root-a", "Renamed root conversation", 0),
     )
     meta_conn.commit()
     meta_conn.close()
@@ -98,3 +99,40 @@ def test_api_sessions_groups_compression_children_by_root_latest_leaf(tmp_path, 
     assert "root-a" not in ids
     assert "child-old" not in ids
     assert "cli-ignored" not in ids
+
+    # Pagination headers are present
+    assert response.headers["X-Total-Count"] == "2"  # 2 visible grouped conversations
+    assert response.headers["X-Offset"] == "0"
+    assert response.headers["X-Limit"] == "30"
+
+
+def test_api_sessions_paginates_after_grouping_visible_conversations(tmp_path, monkeypatch):
+    state_db = tmp_path / "state.db"
+    meta_db = tmp_path / "proxy_meta.db"
+    _make_state_db(state_db)
+    meta_conn = sqlite3.connect(meta_db)
+    meta_conn.execute(
+        "CREATE TABLE session_meta (session_id TEXT PRIMARY KEY, custom_name TEXT NOT NULL, "
+        "updated_at REAL NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0)"
+    )
+    meta_conn.commit()
+    meta_conn.close()
+
+    monkeypatch.setattr(server, "_STATE_DB_PATH", str(state_db))
+    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
+
+    client = TestClient(server.app)
+    login = client.post("/auth/login", json={"password": "testpass123"})
+    assert login.status_code == 200
+
+    page1 = client.get("/api/sessions?offset=0&limit=1")
+    page2 = client.get("/api/sessions?offset=1&limit=1")
+    page3 = client.get("/api/sessions?offset=2&limit=1")
+
+    assert page1.status_code == 200
+    assert page2.status_code == 200
+    assert page3.status_code == 200
+    assert page1.headers["X-Total-Count"] == "2"
+    assert [row["id"] for row in page1.json()] == ["root-b"]
+    assert [row["id"] for row in page2.json()] == ["child-new"]
+    assert page3.json() == []

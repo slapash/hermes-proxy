@@ -8,6 +8,8 @@ import secrets
 import sqlite3
 import sys
 import time
+import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin, urlparse
@@ -17,6 +19,68 @@ from fastapi import FastAPI, Request, Response, UploadFile, File
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
+
+# ---------------------------------------------------------------------------
+# Structured logging setup
+# ---------------------------------------------------------------------------
+_request_id: ContextVar[str] = ContextVar("request_id", default="-")
+_session_id_ctx: ContextVar[str] = ContextVar("session_id", default="-")
+
+_LOG_FORMAT = os.environ.get("HERMES_PROXY_LOG_FORMAT", "auto").lower()
+
+
+class _JSONFormatter(logging.Formatter):
+    """Emit one JSON object per log line."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        obj = {
+            "ts": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "msg": record.getMessage(),
+            "request_id": _request_id.get("-"),
+            "session_id": _session_id_ctx.get("-"),
+        }
+        if record.exc_info and record.exc_info[0] is not None:
+            obj["exc"] = self.formatException(record.exc_info)
+        # Merge any extra fields passed via logger.info(..., extra={...})
+        for key in ("method", "path", "status", "duration_ms", "ip"):
+            val = getattr(record, key, None)
+            if val is not None:
+                obj[key] = val
+        return _json.dumps(obj, separators=(",", ":"))
+
+
+class _TextFormatter(logging.Formatter):
+    """Human-readable one-liner with request ID."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        rid = _request_id.get("-")
+        sid = _session_id_ctx.get("-")
+        base = f"{record.levelname:>7} [{rid}|{sid}] {record.getMessage()}"
+        if record.exc_info and record.exc_info[0] is not None:
+            base += "\n" + self.formatException(record.exc_info)
+        return base
+
+
+def _setup_logging() -> None:
+    is_tty = hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
+    fmt_choice = _LOG_FORMAT
+    if fmt_choice == "auto":
+        fmt_choice = "text" if is_tty else "json"
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(_TextFormatter() if fmt_choice == "text" else _JSONFormatter())
+    root = logging.getLogger()
+    # Only configure if no handlers are set yet (avoid double-logging in tests)
+    if not root.handlers:
+        root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    # Quiet down noisy libraries
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+_setup_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +127,8 @@ if len(_SIGNING_KEY) < 32:
 
 def _init_proxy_meta_db() -> None:
     with sqlite3.connect(_PROXY_META_DB_PATH) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS session_meta (
                 session_id TEXT PRIMARY KEY,
@@ -70,9 +136,84 @@ def _init_proxy_meta_db() -> None:
                 updated_at REAL NOT NULL
             )
         """)
+        # Add archived column if upgrading from older schema
+        try:
+            conn.execute("ALTER TABLE session_meta ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass  # Column already exists
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS uploads (
+                filename TEXT PRIMARY KEY,
+                size INTEGER NOT NULL,
+                mime_type TEXT NOT NULL,
+                uploaded_at REAL NOT NULL,
+                session_id TEXT,
+                token TEXT
+            )
+        """)
+        try:
+            conn.execute("ALTER TABLE uploads ADD COLUMN token TEXT")
+        except Exception:
+            pass  # Column already exists
         conn.commit()
 
 _init_proxy_meta_db()
+
+
+def _meta_db_conn(timeout: int = 5) -> sqlite3.Connection:
+    """Open a connection to proxy_meta.db with WAL mode and busy_timeout set."""
+    conn = sqlite3.connect(_PROXY_META_DB_PATH, timeout=timeout)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _conversation_session_ids(session_id: str) -> list[str]:
+    """Return root + child session IDs for the displayed conversation.
+
+    Hermes compression children point at the original root via parent_session_id.
+    Sidebar actions should operate on the whole visible conversation, not only
+    the latest leaf row that happens to be displayed.
+    """
+    with sqlite3.connect(_STATE_DB_PATH, timeout=5) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT id, parent_session_id FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return []
+        root_id = row["parent_session_id"] or row["id"]
+        rows = conn.execute(
+            "SELECT id FROM sessions WHERE id = ? OR parent_session_id = ?",
+            (root_id, root_id),
+        ).fetchall()
+        ids = [r["id"] for r in rows]
+        return ids or [session_id]
+
+
+def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
+
+
+def _assign_pending_uploads(token: str | None, session_id: str | None) -> None:
+    """Attach uploads made before first chat to the session created by that chat."""
+    if not token or not session_id:
+        return
+    try:
+        with _meta_db_conn() as conn:
+            if not _table_has_column(conn, "uploads", "token"):
+                return
+            conn.execute(
+                "UPDATE uploads SET session_id = ? WHERE token = ? AND session_id IS NULL",
+                (session_id, token),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.warning("Pending upload reassignment failed (non-fatal): %s", exc)
+
 
 # ---------------------------------------------------------------------------
 # In-memory state
@@ -92,6 +233,11 @@ _RATE_LIMIT_MAX = 5
 _RATE_LIMIT_WINDOW = 60  # seconds
 _RATE_LIMIT_EVICT_AFTER = _RATE_LIMIT_WINDOW * 10  # evict entries older than 600s
 
+# Chat rate limiting config
+_CHAT_RPM = int(os.environ.get("HERMES_PROXY_CHAT_RPM", "30"))
+_CHAT_BURST = int(os.environ.get("HERMES_PROXY_CHAT_BURST", "5"))
+_CHAT_RATE_LIMITS = {}  # type: dict  # key -> SlidingWindowRateLimiter instance
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -110,7 +256,7 @@ class _MaxBodyMiddleware(BaseHTTPMiddleware):
                 default_limit = 1_048_576
                 # Image uploads are route-limited separately; allow 25 MB files plus
                 # small multipart overhead while keeping JSON/chat requests tight.
-                upload_limit = int(globals().get("_UPLOAD_MAX_SIZE", 25 * 1024 * 1024)) + 1_048_576
+                upload_limit = _UPLOAD_MAX_SIZE + 1_048_576
                 limit = upload_limit if request.url.path == "/api/attachments" else default_limit
                 if int(content_length) > limit:
                     return JSONResponse({"error": "Request too large"}, status_code=413)
@@ -138,9 +284,66 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(_SecurityHeadersMiddleware)
 app.add_middleware(_MaxBodyMiddleware)
 
+
+class _RequestLogMiddleware(BaseHTTPMiddleware):
+    """Assign a per-request ID and log method/path/status/duration."""
+
+    async def dispatch(self, request: Request, call_next):
+        rid = secrets.token_hex(4)  # 8-char hex
+        _request_id.set(rid)
+        # Track session_id if available from header
+        sid = request.headers.get("x-hermes-session-id", "-")
+        if sid:
+            _session_id_ctx.set(sid)
+        # Also store in request state for downstream handlers
+        request.state.request_id = rid
+
+        start = time.monotonic()
+        response = await call_next(request)
+        duration_ms = round((time.monotonic() - start) * 1000, 1)
+
+        # Try to resolve session_id from browser_sessions if not in header
+        if sid == "-":
+            token = request.cookies.get("hermes-proxy-auth")
+            if token and token in browser_sessions:
+                sid = browser_sessions[token][:12]
+                _session_id_ctx.set(sid)
+
+        logger.info(
+            "%s %s %s",
+            request.method,
+            request.url.path,
+            response.status_code,
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                "duration_ms": duration_ms,
+                "ip": _get_client_ip(request),
+            },
+        )
+        # Include request ID in response headers for debugging
+        response.headers["X-Request-Id"] = rid
+        return response
+
+
+app.add_middleware(_RequestLogMiddleware)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _get_client_ip(request: Request) -> str:
+    """Return the real client IP, respecting X-Forwarded-For.
+
+    The leftmost IP in X-Forwarded-For is the original client.
+    Falls back to request.client.host for direct connections.
+    """
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "-"
+
 
 def _make_token() -> str:
     """Generate a signed auth token: <random_hex>.<hmac_sig>"""
@@ -192,6 +395,62 @@ def _check_rate_limit(ip: str) -> bool:
     return True
 
 
+class _SlidingWindowRateLimiter:
+    """Token-bucket rate limiter: RPM requests per minute with burst allowance."""
+
+    def __init__(self, rpm: int, burst: int):
+        self._rpm = rpm
+        self._burst = burst
+        self._tokens = float(burst)  # start with burst capacity
+        self._last_refill = time.monotonic()
+
+    def _refill(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._last_refill
+        # Add tokens for elapsed time (RPM / 60 = tokens per second)
+        refill = elapsed * (self._rpm / 60.0)
+        self._tokens = min(float(self._burst), self._tokens + refill)
+        self._last_refill = now
+
+    def allow(self) -> bool:
+        self._refill()
+        if self._tokens >= 1.0:
+            self._tokens -= 1.0
+            return True
+        return False
+
+    @property
+    def retry_after(self) -> float:
+        """Seconds until the next token is available (0 if tokens > 0)."""
+        self._refill()
+        if self._tokens >= 1.0:
+            return 0.0
+        # Time for one token: 60 / RPM seconds
+        return max(0.0, (60.0 / self._rpm) * (1.0 - self._tokens))
+
+
+def _check_chat_rate_limit(key: str) -> tuple[bool, float]:
+    """Check chat rate limit for a key (auth token or IP).
+
+    Returns (allowed, retry_after_seconds).
+    Lazily creates a per-key limiter on first use and evicts stale entries.
+    """
+    now = time.monotonic()
+    # Opportunistic eviction of limiters idle > 10 minutes
+    stale = [k for k, lim in _CHAT_RATE_LIMITS.items()
+             if now - lim._last_refill > 600]
+    for k in stale:
+        del _CHAT_RATE_LIMITS[k]
+
+    limiter = _CHAT_RATE_LIMITS.get(key)
+    if limiter is None:
+        limiter = _SlidingWindowRateLimiter(_CHAT_RPM, _CHAT_BURST)
+        _CHAT_RATE_LIMITS[key] = limiter
+    allowed = limiter.allow()
+    retry_after = limiter.retry_after if not allowed else 0.0
+    return allowed, retry_after
+
+
 def _evict_stale_browser_sessions() -> None:
     """Evict browser_sessions entries older than SESSION_TTL (30 days)."""
     cutoff = time.time() - _SESSION_TTL
@@ -218,12 +477,62 @@ def _clear_auth_cookie(response: Response) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Health check (unauthenticated)
+# ---------------------------------------------------------------------------
+
+@app.get("/healthz")
+async def healthz() -> Response:
+    """Unauthenticated health probe for systemd/docker/Cloudflare monitoring."""
+    checks = {}
+    overall = "ok"
+
+    # 1. state.db readable
+    try:
+        with sqlite3.connect(_STATE_DB_PATH, timeout=3) as conn:
+            conn.execute("SELECT 1 FROM sessions LIMIT 1")
+        checks["state_db"] = True
+    except Exception as exc:
+        logger.warning("healthz: state_db check failed: %s", exc)
+        checks["state_db"] = False
+        overall = "unhealthy"
+
+    # 2. proxy_meta_db writable (try a write + rollback)
+    try:
+        with _meta_db_conn(timeout=3) as conn:
+            conn.execute("BEGIN")
+            conn.execute("INSERT INTO session_meta (session_id, custom_name, updated_at) "
+                          "VALUES ('__healthz_check__', '__healthz__', 0)")
+            conn.execute("ROLLBACK")
+        checks["meta_db"] = True
+    except Exception as exc:
+        logger.warning("healthz: meta_db check failed: %s", exc)
+        checks["meta_db"] = False
+        if overall != "unhealthy":
+            overall = "degraded"
+
+    # 3. api_server reachable
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{_API_SERVER_URL}/v1/models")
+            # Any non-connection-error response means the server is alive
+            checks["api_server"] = True
+    except Exception as exc:
+        logger.warning("healthz: api_server check failed: %s", exc)
+        checks["api_server"] = False
+        if overall != "unhealthy":
+            overall = "degraded"
+
+    status_code = 200 if overall != "unhealthy" else 503
+    return JSONResponse({"status": overall, "checks": checks}, status_code=status_code)
+
+
+# ---------------------------------------------------------------------------
 # Auth routes
 # ---------------------------------------------------------------------------
 
 @app.post("/auth/login")
 async def auth_login(request: Request) -> Response:
-    ip = request.client.host if request.client else "unknown"
+    ip = _get_client_ip(request)
     if not _check_rate_limit(ip):
         return JSONResponse({"error": "Too many attempts"}, status_code=429)
 
@@ -282,6 +591,16 @@ async def session_validate(request: Request) -> Response:
 async def api_chat(request: Request) -> Response:
     if not _is_authenticated(request):
         return _auth_error()
+
+    # Rate limit on authenticated token, fall back to IP
+    rate_limit_key = _get_token(request) or _get_client_ip(request)
+    allowed, retry_after = _check_chat_rate_limit(rate_limit_key)
+    if not allowed:
+        return JSONResponse(
+            {"error": "Rate limit exceeded", "retry_after": round(retry_after, 1)},
+            status_code=429,
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
 
     _evict_stale_browser_sessions()
     token = _get_token(request)
@@ -375,29 +694,53 @@ async def api_chat(request: Request) -> Response:
     if hermes_session_id:
         upstream_headers["X-Hermes-Session-Id"] = hermes_session_id
 
+    def _sse_delta(text: str) -> bytes:
+        payload = _json.dumps({"choices": [{"delta": {"content": text}}]})
+        return f"data: {payload}\n\n".encode()
+
     async def generate_with_capture():
-        async with httpx.AsyncClient(timeout=300) as client:
-            async with client.stream(
-                "POST",
-                f"{_API_SERVER_URL}/v1/chat/completions",
-                json=upstream_body,
-                headers=upstream_headers,
-            ) as upstream_response:
-                new_session_id = upstream_response.headers.get("x-hermes-session-id")
-                if new_session_id and token:
-                    if token not in _session_created:
-                        _session_created[token] = time.time()
-                    browser_sessions[token] = new_session_id
+        try:
+            async with httpx.AsyncClient(timeout=300) as client:
+                async with client.stream(
+                    "POST",
+                    f"{_API_SERVER_URL}/v1/chat/completions",
+                    json=upstream_body,
+                    headers=upstream_headers,
+                ) as upstream_response:
+                    content_type = upstream_response.headers.get("content-type", "").lower()
+                    if upstream_response.status_code >= 400 or "text/event-stream" not in content_type:
+                        body = (await upstream_response.aread()).decode("utf-8", errors="replace").strip()
+                        logger.warning(
+                            "Upstream chat returned unexpected response: status=%s content_type=%s body=%r",
+                            upstream_response.status_code,
+                            content_type or "-",
+                            body[:500],
+                        )
+                        message = f"_(Upstream returned {upstream_response.status_code} {content_type or 'unknown content-type'} instead of SSE)_"
+                        yield _sse_delta(message)
+                        yield b"data: [DONE]\n\n"
+                        return
 
-                async for chunk in upstream_response.aiter_bytes():
-                    yield chunk
+                    new_session_id = upstream_response.headers.get("x-hermes-session-id")
+                    if new_session_id and token:
+                        if token not in _session_created:
+                            _session_created[token] = time.time()
+                        browser_sessions[token] = new_session_id
+                        _assign_pending_uploads(token, new_session_id)
 
-                # After stream ends, emit a synthetic SSE event with the captured
-                # session ID so the browser can store it regardless of whether this
-                # was the first message (headers are locked at stream start).
-                if new_session_id:
-                    payload = _json.dumps({"hermes_session_id": new_session_id})
-                    yield f"event: session\ndata: {payload}\n\n".encode()
+                    async for chunk in upstream_response.aiter_bytes():
+                        yield chunk
+
+                    # After stream ends, emit a synthetic SSE event with the captured
+                    # session ID so the browser can store it regardless of whether this
+                    # was the first message (headers are locked at stream start).
+                    if new_session_id:
+                        payload = _json.dumps({"hermes_session_id": new_session_id})
+                        yield f"event: session\ndata: {payload}\n\n".encode()
+        except httpx.RequestError as exc:
+            logger.warning("Upstream chat request failed: %s", exc)
+            yield _sse_delta("_(Upstream chat request failed)_")
+            yield b"data: [DONE]\n\n"
 
     response_headers = {
         "Content-Type": "text/event-stream",
@@ -418,16 +761,21 @@ async def api_chat(request: Request) -> Response:
 
 
 @app.get("/api/sessions")
-async def api_sessions(request: Request) -> Response:
+async def api_sessions(request: Request, offset: int = 0, limit: int = 30) -> Response:
     if not _is_authenticated(request):
         return _auth_error()
+
+    # Clamp params
+    offset = max(0, offset)
+    limit = max(1, min(limit, 100))
 
     try:
         with sqlite3.connect(_STATE_DB_PATH, timeout=5) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
-            # Pull first user message to use as title when title is NULL.
-            # Exclude Open WebUI system-generated sessions (### Task: prefix).
+            # Pull all candidate rows first. Pagination must happen after collapsing
+            # compression children and filtering archived/system sessions, otherwise
+            # pages can contain duplicate conversation segments or underfill.
             cur.execute(
                 """
                 SELECT s.id, s.title, s.started_at, s.ended_at, s.end_reason,
@@ -437,7 +785,7 @@ async def api_sessions(request: Request) -> Response:
                         ORDER BY m.timestamp ASC LIMIT 1) AS first_msg
                 FROM sessions s
                 WHERE s.source = 'api_server'
-                ORDER BY s.started_at DESC LIMIT 50
+                ORDER BY s.started_at DESC
                 """
             )
             rows = []
@@ -465,12 +813,20 @@ async def api_sessions(request: Request) -> Response:
 
         # Overlay custom names from proxy_meta.db. A custom name on a compressed
         # root applies to the latest child row shown for that conversation.
+        # Also filter out archived sessions.
+        archived_ids: set[str] = set()
         try:
-            with sqlite3.connect(_PROXY_META_DB_PATH, timeout=5) as pmconn:
-                pmconn.row_factory = sqlite3.Row
+            with _meta_db_conn() as pmconn:
                 pmcur = pmconn.cursor()
-                pmcur.execute("SELECT session_id, custom_name FROM session_meta")
-                custom_names = {r["session_id"]: r["custom_name"] for r in pmcur.fetchall()}
+                pmcur.execute("SELECT session_id, custom_name, archived FROM session_meta")
+                custom_names = {}
+                for row in pmcur.fetchall():
+                    if row["archived"]:
+                        archived_ids.add(row["session_id"])
+                    if row["custom_name"]:
+                        custom_names[row["session_id"]] = row["custom_name"]
+            # Remove archived sessions — also remove children whose root is archived
+            rows = [r for r in rows if r["id"] not in archived_ids and r.get("root_session_id", r["id"]) not in archived_ids]
             for r in rows:
                 root_id = r.get("root_session_id") or r["id"]
                 if r["id"] in custom_names:
@@ -479,7 +835,13 @@ async def api_sessions(request: Request) -> Response:
                     r["title"] = custom_names[root_id]
         except Exception as exc:
             logger.warning("proxy_meta.db read failed (non-fatal): %s", exc)
-        return JSONResponse(rows)
+        total = len(rows)
+        paged_rows = rows[offset:offset + limit]
+        resp = JSONResponse(paged_rows)
+        resp.headers["X-Total-Count"] = str(total)
+        resp.headers["X-Offset"] = str(offset)
+        resp.headers["X-Limit"] = str(limit)
+        return resp
     except Exception as exc:
         logger.error("DB error in api_sessions: %s", exc)
         return JSONResponse({"error": "Internal server error"}, status_code=500)
@@ -499,6 +861,7 @@ async def api_sessions_search(q: str, request: Request) -> Response:
             cur.execute(
                 """
                 SELECT s.id, s.title, s.started_at, s.ended_at, s.message_count, s.model,
+                       s.parent_session_id,
                        m.timestamp AS match_offset,
                        m.content AS match_content,
                        (SELECT m2.content FROM messages m2
@@ -530,16 +893,29 @@ async def api_sessions_search(q: str, request: Request) -> Response:
                 snippet = snippet[:80] + ("…" if len(snippet) > 80 else "")
                 r["match_snippet"] = snippet
                 rows.append(r)
-        # Overlay custom names
+        # Overlay custom names and filter archived sessions
         try:
-            with sqlite3.connect(_PROXY_META_DB_PATH, timeout=5) as pmconn:
-                pmconn.row_factory = sqlite3.Row
+            with _meta_db_conn() as pmconn:
                 pmcur = pmconn.cursor()
-                pmcur.execute("SELECT session_id, custom_name FROM session_meta")
-                custom_names = {r2["session_id"]: r2["custom_name"] for r2 in pmcur.fetchall()}
+                pmcur.execute("SELECT session_id, custom_name, archived FROM session_meta")
+                archived_ids = set()
+                custom_names = {}
+                for r2 in pmcur.fetchall():
+                    if r2["archived"]:
+                        archived_ids.add(r2["session_id"])
+                    if r2["custom_name"]:
+                        custom_names[r2["session_id"]] = r2["custom_name"]
+            rows = [
+                r for r in rows
+                if r["id"] not in archived_ids
+                and (r.get("parent_session_id") or r["id"]) not in archived_ids
+            ]
             for r in rows:
+                root_id = r.get("parent_session_id") or r["id"]
                 if r["id"] in custom_names:
                     r["title"] = custom_names[r["id"]]
+                elif root_id in custom_names:
+                    r["title"] = custom_names[root_id]
         except Exception as exc:
             logger.warning("proxy_meta.db overlay failed (non-fatal): %s", exc)
         return JSONResponse(rows)
@@ -587,7 +963,7 @@ async def api_session_rename(session_id: str, request: Request) -> Response:
     if len(name) > 100:
         return JSONResponse({"error": "name too long (max 100 chars)"}, status_code=400)
     try:
-        with sqlite3.connect(_PROXY_META_DB_PATH, timeout=5) as conn:
+        with _meta_db_conn() as conn:
             conn.execute(
                 "INSERT INTO session_meta (session_id, custom_name, updated_at) "
                 "VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET "
@@ -598,7 +974,7 @@ async def api_session_rename(session_id: str, request: Request) -> Response:
         # Lazy eviction: remove session_meta rows whose session_id no longer exists
         # in state.db. Runs after every successful rename -- no background worker needed.
         try:
-            with sqlite3.connect(_PROXY_META_DB_PATH, timeout=5) as pmconn:
+            with _meta_db_conn() as pmconn:
                 pmconn.execute(f"ATTACH DATABASE ? AS statedb", (_STATE_DB_PATH,))
                 pmconn.execute(
                     "DELETE FROM session_meta WHERE session_id NOT IN "
@@ -610,6 +986,100 @@ async def api_session_rename(session_id: str, request: Request) -> Response:
         return JSONResponse({"ok": True})
     except Exception as exc:
         logger.error("DB error in api_session_rename: %s", exc)
+        return JSONResponse({"error": "Internal server error"}, status_code=500)
+
+
+@app.put("/api/sessions/{session_id}/archive")
+async def api_session_archive(session_id: str, request: Request) -> Response:
+    if not _is_authenticated(request):
+        return _auth_error()
+    if not _SESSION_ID_RE.match(session_id):
+        return JSONResponse({"error": "Invalid session_id"}, status_code=400)
+    try:
+        conversation_ids = _conversation_session_ids(session_id)
+        if not conversation_ids:
+            return JSONResponse({"error": "Session not found"}, status_code=404)
+        now = time.time()
+        with _meta_db_conn() as conn:
+            # Ensure rows exist for every session segment in the conversation.
+            conn.executemany(
+                "INSERT INTO session_meta (session_id, custom_name, updated_at, archived) "
+                "VALUES (?, '', ?, 1) "
+                "ON CONFLICT(session_id) DO UPDATE SET archived=1, updated_at=excluded.updated_at",
+                [(sid, now) for sid in conversation_ids],
+            )
+            conn.commit()
+        return JSONResponse({"ok": True, "archived": True})
+    except Exception as exc:
+        logger.error("DB error in api_session_archive: %s", exc)
+        return JSONResponse({"error": "Internal server error"}, status_code=500)
+
+
+@app.put("/api/sessions/{session_id}/unarchive")
+async def api_session_unarchive(session_id: str, request: Request) -> Response:
+    if not _is_authenticated(request):
+        return _auth_error()
+    if not _SESSION_ID_RE.match(session_id):
+        return JSONResponse({"error": "Invalid session_id"}, status_code=400)
+    try:
+        conversation_ids = _conversation_session_ids(session_id)
+        if not conversation_ids:
+            return JSONResponse({"error": "Session not found"}, status_code=404)
+        placeholders = ",".join("?" for _ in conversation_ids)
+        with _meta_db_conn() as conn:
+            conn.execute(
+                f"UPDATE session_meta SET archived=0, updated_at=? WHERE session_id IN ({placeholders})",
+                (time.time(), *conversation_ids),
+            )
+            conn.commit()
+        return JSONResponse({"ok": True, "archived": False})
+    except Exception as exc:
+        logger.error("DB error in api_session_unarchive: %s", exc)
+        return JSONResponse({"error": "Internal server error"}, status_code=500)
+
+
+@app.delete("/api/sessions/{session_id}")
+async def api_session_delete(session_id: str, request: Request) -> Response:
+    if not _is_authenticated(request):
+        return _auth_error()
+    if not _SESSION_ID_RE.match(session_id):
+        return JSONResponse({"error": "Invalid session_id"}, status_code=400)
+    try:
+        conversation_ids = _conversation_session_ids(session_id)
+        if not conversation_ids:
+            return JSONResponse({"error": "Session not found"}, status_code=404)
+        placeholders = ",".join("?" for _ in conversation_ids)
+
+        # Delete from state.db (sessions + messages)
+        with sqlite3.connect(_STATE_DB_PATH, timeout=5) as conn:
+            conn.execute(f"DELETE FROM messages WHERE session_id IN ({placeholders})", conversation_ids)
+            conn.execute(f"DELETE FROM sessions WHERE id IN ({placeholders})", conversation_ids)
+            conn.commit()
+
+        # Delete proxy-owned metadata and uploads for this conversation. Upload files
+        # are path-checked so only files under _UPLOADS_DIR can be removed.
+        try:
+            uploads_root = _UPLOADS_DIR.resolve()
+            with _meta_db_conn() as pmconn:
+                upload_rows = pmconn.execute(
+                    f"SELECT filename FROM uploads WHERE session_id IN ({placeholders})", conversation_ids
+                ).fetchall()
+                for row in upload_rows:
+                    fp = (uploads_root / row["filename"]).resolve()
+                    if fp.is_file() and uploads_root in fp.parents:
+                        try:
+                            fp.unlink()
+                        except OSError as unlink_exc:
+                            logger.warning("Upload delete failed (non-fatal): %s", unlink_exc)
+                pmconn.execute(f"DELETE FROM uploads WHERE session_id IN ({placeholders})", conversation_ids)
+                pmconn.execute(f"DELETE FROM session_meta WHERE session_id IN ({placeholders})", conversation_ids)
+                pmconn.commit()
+        except Exception as meta_exc:
+            logger.warning("proxy_meta.db cleanup failed (non-fatal): %s", meta_exc)
+
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        logger.error("DB error in api_session_delete: %s", exc)
         return JSONResponse({"error": "Internal server error"}, status_code=500)
 
 
@@ -627,6 +1097,15 @@ def _load_plugins(plugin_dir: Path) -> tuple[list[str], list[str]]:
     """Resolve HERMES_PROXY_PLUGIN_* env vars into safe server-side paths.
     Returns (scripts, errors)."""
     safe_root = plugin_dir.resolve()
+    # Wipe stale plugin copies (files matching the numbered-destination pattern
+    # {index}_{name}.js that this loader creates) before loading new ones.
+    _stale_plugin_re = re.compile(r'^\d+_.*\.js$')
+    for existing in plugin_dir.iterdir():
+        if existing.is_file() and _stale_plugin_re.match(existing.name):
+            try:
+                existing.unlink()
+            except OSError:
+                pass  # best-effort
     scripts: list[str] = []
     errors: list[str] = []
     for i in range(10):
@@ -687,6 +1166,37 @@ _UPLOADS_DIR = Path(__file__).parent / "uploads"
 _UPLOADS_DIR.mkdir(exist_ok=True)
 _UPLOAD_MAX_SIZE = 25 * 1024 * 1024  # 25 MB
 _UPLOAD_WHITELIST = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+_UPLOAD_TTL_DAYS = int(os.environ.get("HERMES_PROXY_UPLOAD_TTL_DAYS", "30"))
+
+
+def _evict_stale_uploads() -> None:
+    """Delete upload files and DB rows older than _UPLOAD_TTL_DAYS.
+
+    Called lazily on each upload — no background worker needed.
+    Path traversal safety: only deletes files whose resolved path is
+    inside _UPLOADS_DIR.
+    """
+    cutoff = time.time() - (_UPLOAD_TTL_DAYS * 86400)
+    uploads_root = _UPLOADS_DIR.resolve()
+    try:
+        with _meta_db_conn() as conn:
+            cur = conn.execute(
+                "SELECT filename FROM uploads WHERE uploaded_at < ?", (cutoff,)
+            )
+            stale_files = [row["filename"] for row in cur.fetchall()]
+            for fname in stale_files:
+                fp = (uploads_root / fname).resolve()
+                # Safety: only delete files within the uploads directory
+                if fp.is_file() and uploads_root in fp.parents:
+                    try:
+                        fp.unlink()
+                    except OSError:
+                        pass  # best-effort
+                # Always clean up the DB row even if file was already gone
+            conn.execute("DELETE FROM uploads WHERE uploaded_at < ?", (cutoff,))
+            conn.commit()
+    except Exception as exc:
+        logger.warning("Upload eviction failed (non-fatal): %s", exc)
 
 
 @app.post("/api/attachments")
@@ -714,6 +1224,28 @@ async def api_attachments(request: Request, file: UploadFile = File(...)):
     except Exception as exc:
         logger.error("Upload write failed: %s", exc)
         return JSONResponse({"error": "Upload failed"}, status_code=500)
+    # Record upload metadata in proxy_meta.db
+    token = _get_token(request)
+    session_id = browser_sessions.get(token or "")
+    try:
+        with _meta_db_conn() as conn:
+            if _table_has_column(conn, "uploads", "token"):
+                conn.execute(
+                    "INSERT INTO uploads (filename, size, mime_type, uploaded_at, session_id, token) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (final_name, len(raw), ct, time.time(), session_id, token),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO uploads (filename, size, mime_type, uploaded_at, session_id) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (final_name, len(raw), ct, time.time(), session_id),
+                )
+            conn.commit()
+    except Exception as exc:
+        logger.warning("Upload metadata record failed (non-fatal): %s", exc)
+    # Lazy eviction of stale uploads
+    _evict_stale_uploads()
     url = f"/uploads/{final_name}"
     absolute_url = str(request.base_url).rstrip("/") + url
     md = f"![{final_name}]({absolute_url})"
@@ -726,6 +1258,32 @@ async def api_attachments(request: Request, file: UploadFile = File(...)):
         "size": len(raw),
         "markdown": md,
     })
+
+
+@app.get("/api/uploads/stats")
+async def api_uploads_stats(request: Request) -> Response:
+    """Return upload statistics: total files, total bytes, oldest timestamp."""
+    if not _is_authenticated(request):
+        return _auth_error()
+    try:
+        with _meta_db_conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) as total_files, COALESCE(SUM(size), 0) as total_bytes, "
+                "COALESCE(MIN(uploaded_at), 0) as oldest FROM uploads"
+            ).fetchone()
+        # Also count orphan files in uploads/ dir not tracked in DB
+        uploads_root = _UPLOADS_DIR.resolve()
+        on_disk = sum(1 for f in _UPLOADS_DIR.iterdir() if f.is_file())
+        return JSONResponse({
+            "total_files": row["total_files"],
+            "total_bytes": row["total_bytes"],
+            "oldest_timestamp": row["oldest"],
+            "files_on_disk": on_disk,
+            "ttl_days": _UPLOAD_TTL_DAYS,
+        })
+    except Exception as exc:
+        logger.error("Upload stats error: %s", exc)
+        return JSONResponse({"error": "Internal server error"}, status_code=500)
 
 
 def _extract_favicon(html: str, base_url: str) -> str:
@@ -762,8 +1320,10 @@ def _extract_title(html: str) -> str:
 
 
 @app.get("/api/og")
-async def api_og(url: str):
+async def api_og(url: str, request: Request) -> Response:
     """Fetch a URL and return Open Graph + favicon metadata."""
+    if not _is_authenticated(request):
+        return _auth_error()
     if not url or not (url.startswith("http://") or url.startswith("https://")):
         return JSONResponse({"error": "URL must start with http:// or https://"}, status_code=400)
 
