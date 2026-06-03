@@ -1,26 +1,20 @@
-// file-drop-zone.js — drag and drop file upload with overlay
+// file-drop-zone.js — drag/drop files into the core attachment queue
 (function () {
   'use strict';
   if (window.__FileDropZoneInited) return;
   window.__FileDropZoneInited = true;
 
   const PLUGIN_NAME = 'file-drop-zone';
-  const UPLOAD_MAX_MB = 5;
 
-  function safe(fn, fallback) { try { return fn(); } catch { return fallback; } }
-  function esc(s) {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-
-  function insertAt(el, text) {
-    const ss = el.selectionStart || 0;
-    const se = el.selectionEnd || 0;
-    el.value = el.value.slice(0, ss) + text + el.value.slice(se);
-    el.selectionStart = el.selectionEnd = ss + text.length;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
+  function hasFileItems(e) {
+    return Array.from(e.dataTransfer?.items || []).some(item => item.kind === 'file');
   }
 
   function getOverlay() {
+    return document.getElementById('drag-overlay') || createFallbackOverlay();
+  }
+
+  function createFallbackOverlay() {
     let o = document.getElementById('file-drop-overlay');
     if (!o) {
       o = document.createElement('div');
@@ -30,69 +24,47 @@
         background:#0008;color:var(--text);font-size:18px;font-weight:bold;backdrop-filter:blur(4px);
         pointer-events:none;
       `;
-      o.textContent = 'Drop files here to upload';
+      o.textContent = 'Drop files here';
       document.body.appendChild(o);
     }
     return o;
   }
 
   function showOverlay() {
-    getOverlay().style.display = 'flex';
+    const overlay = getOverlay();
+    if (overlay.id === 'drag-overlay') overlay.classList.add('active');
+    else overlay.style.display = 'flex';
   }
+
   function hideOverlay() {
-    getOverlay().style.display = 'none';
+    const overlay = getOverlay();
+    if (overlay.id === 'drag-overlay') overlay.classList.remove('active');
+    else overlay.style.display = 'none';
   }
 
-  async function uploadFile(file, msgInput) {
-    if (file.size > UPLOAD_MAX_MB * 1024 * 1024) {
-      alert(`File too large (max ${UPLOAD_MAX_MB} MB)`);
-      return;
-    }
-    const ok = file.type.startsWith('image/') || file.type.startsWith('text/') || file.type.startsWith('application/pdf');
-    if (!ok) {
-      if (!confirm(`Upload ${esc(file.name)} (${file.type})?`)) return;
-    }
-    const form = new FormData();
-    form.append('file', file, file.name);
-    try {
-      const res = await fetch('/api/attachments', { method: 'POST', body: form });
-      if (!res.ok) throw new Error('Upload failed: ' + res.status);
-      const data = await res.json();
-      insertAt(msgInput, data.markdown + '\n');
-    } catch (e) {
-      console.error('[file-drop]', e);
-      alert('Upload failed for ' + file.name);
-    }
-  }
-
-  function onDragEnter(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    showOverlay();
-  }
   function onDragOver(e) {
+    if (!hasFileItems(e)) return;
     e.preventDefault();
-    e.stopPropagation();
     showOverlay();
   }
+
   function onDragLeave(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.relatedTarget && !e.relatedTarget.closest('#file-drop-overlay')) hideOverlay();
+    if (e.clientX === 0 || e.clientY === 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+      hideOverlay();
+    }
   }
+
   function onDrop(e) {
+    if (e.__hermesAttachmentHandled || !e.dataTransfer?.files?.length) return;
+    if (!window.HermesProxy?.queueAttachments) return;
+
+    e.__hermesAttachmentHandled = true;
     e.preventDefault();
-    e.stopPropagation();
     hideOverlay();
-    const msgInput = document.getElementById('msg-input');
-    if (!msgInput) return;
-    const files = e.dataTransfer?.files;
-    if (!files) return;
-    for (const file of files) uploadFile(file, msgInput);
+    window.HermesProxy.queueAttachments(e.dataTransfer.files, { source: PLUGIN_NAME });
   }
 
   function init() {
-    document.addEventListener('dragenter', onDragEnter);
     document.addEventListener('dragover', onDragOver);
     document.addEventListener('dragleave', onDragLeave);
     document.addEventListener('drop', onDrop);

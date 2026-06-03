@@ -1044,52 +1044,40 @@
       att.local_path = data.local_path;
       att.uploaded = true;
       att.progress = 100;
+      return att;
     } catch (err) {
       att.error = err.message || 'Upload failed';
+      throw err;
     } finally {
       _renderAttachmentPreviews();
     }
   }
 
-  function _queueFiles(files) {
-    const selected = Array.from(files || []);
-    for (const file of selected) {
-      const att = { file, previewUrl: URL.createObjectURL(file), uploaded: false, progress: 0, error: '' };
-      pendingAttachments.push(att);
-      _uploadAttachment(att);
-    }
+  function uploadAttachment(file) {
+    const att = { file, previewUrl: URL.createObjectURL(file), uploaded: false, progress: 0, error: '' };
+    pendingAttachments.push(att);
+    const upload = _uploadAttachment(att).catch(() => att);
     _renderAttachmentPreviews();
+    return upload;
+  }
+
+  function queueAttachments(files) {
+    const selected = Array.from(files || []);
+    return selected.map(file => uploadAttachment(file));
+  }
+
+  if (window.HermesProxy) {
+    window.HermesProxy.uploadAttachment = uploadAttachment;
+    window.HermesProxy.queueAttachments = queueAttachments;
   }
 
   if (attachBtn && fileInput) {
     attachBtn.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', () => {
-      _queueFiles(fileInput.files);
+      queueAttachments(fileInput.files);
       fileInput.value = '';
     });
   }
-
-  document.addEventListener('dragover', (e) => {
-    if (!Array.from(e.dataTransfer?.items || []).some(i => i.kind === 'file')) return;
-    e.preventDefault();
-    if (dragOverlay) dragOverlay.classList.add('active');
-  });
-  document.addEventListener('dragleave', (e) => {
-    if (e.clientX === 0 || e.clientY === 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
-      if (dragOverlay) dragOverlay.classList.remove('active');
-    }
-  });
-  document.addEventListener('drop', (e) => {
-    if (!e.dataTransfer?.files?.length) return;
-    e.preventDefault();
-    if (dragOverlay) dragOverlay.classList.remove('active');
-    _queueFiles(e.dataTransfer.files);
-  });
-
-  msgInput.addEventListener('paste', (e) => {
-    const files = Array.from(e.clipboardData?.files || []).filter(f => f.type && f.type.startsWith('image/'));
-    if (files.length) _queueFiles(files);
-  });
 
   // ── Send ──
   sendBtn.addEventListener('click', sendMessage);
