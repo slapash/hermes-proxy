@@ -512,9 +512,9 @@ def _inject_plugins(html: str) -> str:
     tags = []
     for src in scripts:
         if src.startswith("http://") or src.startswith("https://"):
-            tags.append(f'<script src="{src}" crossorigin="anonymous"></script>')
+            tags.append(f'<script src="{src}" crossorigin="anonymous" defer></script>')
         else:
-            tags.append(f'<script src="{src}"></script>')
+            tags.append(f'<script src="{src}" defer></script>')
     marker = "</head>"
     if marker in html:
         html = html.replace(marker, "\n".join(tags) + "\n" + marker, 1)
