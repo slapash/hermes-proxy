@@ -66,6 +66,7 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "connect-src 'self'; "
             "frame-ancestors 'none';"
         )
+        response.headers["Permissions-Policy"] = "microphone=(self), on-device-speech-recognition=(self)"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -132,9 +133,7 @@ app.mount("/uploads", StaticFiles(directory=str(_UPLOADS_DIR)), name="uploads")
 
 @app.get("/")
 async def root(request: Request) -> Response:
-    """Serve index.html with plugin scripts injected."""
-    if not _is_authenticated(request):
-        return _auth_error()
+    """Serve index.html with plugin scripts injected (SPA handles auth client-side)."""
     index_path = _STATIC_DIR / "index.html"
     html = index_path.read_text(encoding="utf-8") if index_path.exists() else "<h1>Hermes Chat</h1>"
     html = _inject_plugins(html)

@@ -1241,14 +1241,81 @@
   const vizStatus = document.getElementById('viz-status');
   const vizLangBtn = document.getElementById('viz-lang');
 
-  // Feature detection: SpeechRecognition + on-device support
+  // ── Voice Input ──
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const hasOnDeviceSTT = SpeechRecognition && 'processLocally' in SpeechRecognition.prototype;
-  if (hasOnDeviceSTT && micBtn) micBtn.style.display = 'inline-grid';
-
   let recognition = null;
   let voiceLang = 'fr-FR'; // Default: French
   let voiceAnimId = null;
+
+  // Debug: log what's available on this browser
+  console.log('[voice] SpeechRecognition constructor?', typeof SpeechRecognition);
+  if (SpeechRecognition) {
+    console.log('[voice] processLocally on prototype?', 'processLocally' in SpeechRecognition.prototype);
+    console.log('[voice] available() method?', typeof SpeechRecognition.available);
+    console.log('[voice] install() method?', typeof SpeechRecognition.install);
+  }
+
+  async function _checkVoiceAvailability() {
+    if (!SpeechRecognition || typeof SpeechRecognition.available !== 'function') {
+      console.log('[voice] availability API missing');
+      return 'unsupported';
+    }
+    try {
+      const status = await SpeechRecognition.available({
+        langs: [voiceLang],
+        processLocally: true,
+        quality: 'dictation',
+      });
+      console.log('[voice] availability result:', status);
+      return status;
+    } catch (err) {
+      console.error('[voice] availability check failed:', err);
+      return 'error';
+    }
+  }
+
+  async function _installVoiceLang() {
+    if (!SpeechRecognition || typeof SpeechRecognition.install !== 'function') {
+      console.log('[voice] install() API missing');
+      return false;
+    }
+    try {
+      console.log('[voice] installing language pack for', voiceLang);
+      await SpeechRecognition.install({
+        langs: [voiceLang],
+        processLocally: true,
+        quality: 'dictation',
+      });
+      console.log('[voice] install() completed');
+      return true;
+    } catch (err) {
+      console.error('[voice] install() failed:', err);
+      return false;
+    }
+  }
+
+  const hasOnDeviceSTT = SpeechRecognition && 'processLocally' in SpeechRecognition.prototype;
+  console.log('[voice] showing mic button?', hasOnDeviceSTT, !!micBtn);
+  if (hasOnDeviceSTT && micBtn) micBtn.style.display = 'inline-grid';
+
+  // ── Background preload language pack ──
+  (function _preloadVoicePack() {
+    _checkVoiceAvailability().then(avail => {
+      console.log('[voice] preload availability:', avail);
+      if (avail === 'downloadable') {
+        console.log('[voice] auto-preloading language pack');
+        _installVoiceLang().then(ok => {
+          console.log('[voice] preload install:', ok ? 'started' : 'failed');
+        });
+      }
+      if (micBtn) {
+        const mode = avail === 'available' ? 'on-device' :
+                     avail === 'downloading' ? 'downloading' :
+                     avail === 'downloadable' ? 'downloading' : 'cloud';
+        micBtn.title = `Voice input (${mode})`;
+      }
+    });
+  })();
 
   function _startVoiceAnim() {
     if (!voiceCanvas) return;
@@ -1296,8 +1363,48 @@
     if (vizStatus) vizStatus.textContent = text;
   }
 
-  function startRecording() {
+  async function startRecording() {
     if (!SpeechRecognition) return;
+    console.log('[voice] startRecording called');
+
+    // Check availability before attempting to start
+    const avail = await _checkVoiceAvailability();
+    console.log('[voice] availability:', avail);
+
+    let useOnDevice = false;
+    let useCloud = false;
+
+    if (avail === 'available') {
+      useOnDevice = true;
+      _setVoiceStatus('Listening (on-device)…');
+    } else if (avail === 'unsupported' || avail === 'error') {
+      // No on-device API at all — try cloud fallback
+      useCloud = true;
+      _setVoiceStatus('Listening (cloud)…');
+      console.log('[voice] falling back to cloud STT — on-device API missing');
+    } else if (avail === 'downloadable') {
+      console.log('[voice] language pack downloadable, prompting install');
+      _setVoiceStatus('Installing language pack…');
+      const installed = await _installVoiceLang();
+      if (!installed) {
+        _setVoiceStatus('Install failed — try chrome://components');
+        console.log('[voice] install failed');
+        return;
+      }
+      _setVoiceStatus('Download started — click again in a few seconds');
+      console.log('[voice] install() resolved; waiting for background download');
+      return;
+    } else if (avail === 'downloading') {
+      _setVoiceStatus('Downloading language pack… try again soon');
+      console.log('[voice] language pack still downloading');
+      return;
+    } else {
+      // unexpected status — try cloud fallback
+      useCloud = true;
+      _setVoiceStatus('Listening (cloud)…');
+      console.log('[voice] unexpected availability, falling back to cloud:', avail);
+    }
+
     // Hide keyboard on mobile
     if (document.activeElement === msgInput) msgInput.blur();
 
@@ -1305,18 +1412,27 @@
     recognition.lang = voiceLang;
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.processLocally = true;
+    if (useOnDevice) {
+      recognition.processLocally = true;
+      console.log('[voice] using on-device recognition');
+    } else if (useCloud) {
+      recognition.processLocally = false;
+      console.log('[voice] using cloud recognition');
+    }
+
+    let voiceBaseText = '';
+    let voiceCommitted = '';
 
     recognition.onstart = () => {
       micBtn.classList.add('recording');
       voiceViz.classList.add('active');
-      _setVoiceStatus('Listening…');
       _startVoiceAnim();
-      if (window.HermesProxy) window.HermesProxy.emit('voice:start', { lang: voiceLang });
+      voiceBaseText = msgInput.value || '';
+      voiceCommitted = '';
+      if (window.HermesProxy) window.HermesProxy.emit('voice:start', { lang: voiceLang, mode: useOnDevice ? 'on-device' : 'cloud' });
     };
 
     recognition.onresult = (event) => {
-      // Append results (SpeechRecognition naturally appends)
       let interim = '';
       let final = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -1328,10 +1444,13 @@
         }
       }
       if (final) {
-        msgInput.value = (msgInput.value + ' ' + final.trim()).trim();
-        msgInput.dispatchEvent(new Event('input', { bubbles: true }));
+        voiceCommitted += final.trim() + ' ';
       }
-      _setVoiceStatus(interim || 'Listening…');
+      const preview = ((voiceBaseText + ' ' + voiceCommitted.trim()).trim() + (interim ? ' ' + interim : '')).trim();
+      msgInput.value = preview;
+      msgInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+      _setVoiceStatus('Listening…');
       if (window.HermesProxy) {
         window.HermesProxy.emit('voice:result', { final, interim, lang: voiceLang });
       }
@@ -1344,17 +1463,30 @@
       else if (event.error === 'network') err = 'Network error';
       _setVoiceStatus(err);
       if (window.HermesProxy) window.HermesProxy.emit('voice:error', { error: event.error });
+      console.error('[voice] recognition error:', event.error);
     };
 
     recognition.onend = () => {
       micBtn.classList.remove('recording');
       voiceViz.classList.remove('active');
       _stopVoiceAnim();
+      if (voiceCommitted) {
+        msgInput.value = (voiceBaseText + ' ' + voiceCommitted.trim()).trim();
+        msgInput.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      voiceBaseText = '';
+      voiceCommitted = '';
       _setVoiceStatus('Listening…');
       if (window.HermesProxy) window.HermesProxy.emit('voice:end');
     };
 
-    try { recognition.start(); } catch {}
+    try {
+      console.log('[voice] calling recognition.start()');
+      recognition.start();
+    } catch (err) {
+      console.error('[voice] recognition.start() threw:', err);
+      _setVoiceStatus('Start failed — ' + (err.message || err));
+    }
   }
 
   function stopRecording() {
@@ -1366,6 +1498,7 @@
 
   if (micBtn) {
     micBtn.addEventListener('click', () => {
+      console.log('[voice] micBtn clicked, recording?', micBtn.classList.contains('recording'));
       if (micBtn.classList.contains('recording')) {
         stopRecording();
       } else {
@@ -1380,7 +1513,6 @@
       voiceLang = voiceLang === 'fr-FR' ? 'en-US' : 'fr-FR';
       vizLangBtn.textContent = voiceLang === 'fr-FR' ? 'FR' : 'EN';
       if (recognition) {
-        // Restart with new lang
         stopRecording();
         setTimeout(startRecording, 150);
       }

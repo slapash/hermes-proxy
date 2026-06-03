@@ -37,18 +37,22 @@
     return safe(() => localStorage.getItem(draftKey(sessionId)) || '', '');
   }
 
-  function showIndicator(input) {
+  function showSavedFeedback(input) {
     safe(() => {
-      let el = document.getElementById('draft-autosave-indicator');
-      if (!el) {
-        el = document.createElement('span');
-        el.id = 'draft-autosave-indicator';
-        el.style.cssText = 'opacity:0;transition:opacity .3s;font-size:11px;color:var(--muted);margin-left:8px;';
-        input.parentNode.insertBefore(el, input.nextSibling);
-      }
-      el.textContent = 'Draft saved';
-      el.style.opacity = '1';
-      setTimeout(() => { el.style.opacity = '0'; }, 1500);
+      input.classList.add('saved');
+      setTimeout(() => input.classList.remove('saved'), 800);
+    });
+  }
+
+  function showUnsaved(input) {
+    safe(() => {
+      input.classList.add('unsaved');
+    });
+  }
+
+  function clearUnsaved(input) {
+    safe(() => {
+      input.classList.remove('unsaved');
     });
   }
 
@@ -65,10 +69,12 @@
 
     msgInput.addEventListener('input', () => {
       clearTimeout(_timer);
+      showUnsaved(msgInput);
       const sid = getCurrentSessionId();
       _timer = setTimeout(() => {
         save(sid, msgInput.value);
-        showIndicator(msgInput);
+        clearUnsaved(msgInput);
+        showSavedFeedback(msgInput);
       }, DELAY);
     });
 
