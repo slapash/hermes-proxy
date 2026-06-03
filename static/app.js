@@ -5,10 +5,7 @@
   let autoScrollLocked = true;
   let _thinkingTimer = null;
   let _thinkingStartedAt = 0;
-
-  const ARTIFACT_LANGS = ['html', 'svg', 'mermaid', 'python', 'json', 'csv'];
-  const _artifactStore = new Map();
-  let _artifactMsgCounter = 0;
+  let _msgCounter = 0;
 
   // ── DOM refs ──
   const loginOverlay = document.getElementById('login-overlay');
@@ -656,40 +653,6 @@
     _enhanceCodeBlocks(bubble);
   }
 
-  /* ── Artifact helpers ── */
-
-  function _scanArtifacts(text, msgId) {
-    const regex = /```\s*(html|svg|mermaid|python|json|csv)(?:[^\n]*)\n([\s\S]*?)```/g;
-    let idx = 0;
-    for (const match of text.matchAll(regex)) {
-      const key = `${msgId}_${idx}`;
-      const lang = match[1];
-      const code = match[2];
-      if (!_artifactStore.has(key)) {
-        _artifactStore.set(key, { lang, code });
-        if (window.HermesProxy) {
-          try {
-            window.HermesProxy.emit('artifactDetected', { messageId: msgId, index: idx, lang, code });
-          } catch (e) {
-            console.error('Plugin error in artifactDetected:', e);
-          }
-        }
-      } else {
-        // Update code in place as streaming fills out the block. Re-emit so
-        // buttons can be restored after markdown re-renders replace <pre> nodes.
-        _artifactStore.get(key).code = code;
-        if (window.HermesProxy) {
-          try {
-            window.HermesProxy.emit('artifactDetected', { messageId: msgId, index: idx, lang, code });
-          } catch (e) {
-            console.error('Plugin error in artifactDetected:', e);
-          }
-        }
-      }
-      idx++;
-    }
-  }
-
   function esc(str) {
     return String(str)
       .replace(/&/g, '&amp;')
@@ -712,8 +675,8 @@
   }
 
   function appendMessage(role, content, ts = null) {
-    // Increment counter for each message — used as the message ID for artifact keys
-    const msgId = ++_artifactMsgCounter;
+    // Increment counter for each message — used as the message ID for stable refs
+    const msgId = ++_msgCounter;
 
     const msg = document.createElement('div');
     msg.className = `msg ${role}`;
@@ -723,10 +686,6 @@
     if (role === 'assistant') {
       bubble.innerHTML = content ? DOMPurify.sanitize(marked.parse(content)) : '';
       _enhanceCodeBlocks(bubble);
-      // Scan for artifact code blocks after rendering
-      if (content) {
-        _scanArtifacts(content, msgId);
-      }
     } else {
       bubble.textContent = content || '';
     }
@@ -900,7 +859,7 @@
   }
 
   function cleanThinkingLabel(label) {
-    return label ? String(label).split(' ')[0].replace(/[_/].*$/, '') : 'Thinking';
+    return label ? String(label) : 'Thinking';
   }
 
   function showThinking(label = null) {
@@ -1069,6 +1028,30 @@
   if (window.HermesProxy) {
     window.HermesProxy.uploadAttachment = uploadAttachment;
     window.HermesProxy.queueAttachments = queueAttachments;
+
+    // ── Stable API surface (v1) ──
+    window.HermesProxy.getSessionId = () => currentSessionId;
+    window.HermesProxy.getInputValue = () => msgInput.value;
+    window.HermesProxy.setInputValue = (text) => {
+      msgInput.value = text || '';
+      msgInput.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    window.HermesProxy.clearInput = () => {
+      msgInput.value = '';
+      msgInput.style.height = 'auto';
+    };
+    window.HermesProxy.focusInput = () => msgInput.focus();
+    window.HermesProxy.newSession = () => {
+      if (newSessionBtn) newSessionBtn.click();
+    };
+    window.HermesProxy.clearThread = () => {
+      while (thread.firstChild) thread.removeChild(thread.firstChild);
+    };
+    window.HermesProxy.focusSearch = () => {
+      if (searchInput) searchInput.focus();
+    };
+    window.HermesProxy.sendMessage = sendMessage;
+    window.HermesProxy.showToast = _showToast;
   }
 
   if (attachBtn && fileInput) {
@@ -1187,7 +1170,7 @@
           removeThinking();
           const msg = document.createElement('div');
           msg.className = 'msg assistant';
-          const msgId = ++_artifactMsgCounter;
+          const msgId = ++_msgCounter;
           msg.dataset.msgRef = String(msgId);
           assistantBubble = document.createElement('div');
           assistantBubble.className = 'bubble';
@@ -1201,7 +1184,6 @@
         assistantBubble.dataset.rawContent = assistantContent;
         assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
         _enhanceCodeBlocks(assistantBubble);
-        _scanArtifacts(assistantContent, Number(assistantBubble.dataset.msgRef));
         maybeScrollToBottom();
       };
 
@@ -1233,7 +1215,6 @@
         assistantBubble.dataset.rawContent = assistantContent;
         assistantBubble.innerHTML = DOMPurify.sanitize(marked.parse(assistantContent));
         _enhanceCodeBlocks(assistantBubble);
-        _scanArtifacts(assistantContent, Number(assistantBubble.dataset.msgRef));
         _attachMsgActions(assistantBubble.parentElement, assistantBubble, 'assistant', assistantContent);
         if (window.HermesProxy) window.HermesProxy.emit('messageRendered', assistantBubble, { role: 'assistant', content: assistantContent, ts: Date.now() });
       }
@@ -1255,189 +1236,4 @@
 
   // ── Boot ──
   checkAuth();
-
-  /* ── Artifact panel ── */
-  (function () {
-    const panel = document.getElementById('artifact-panel');
-    const titleEl = document.getElementById('artifact-panel-title');
-    const contentEl = document.getElementById('artifact-panel-content');
-    if (!panel || !contentEl) return;
-
-    let currentCode = '';
-    let currentLang = '';
-
-    // Hook close button
-    const closeBtn = document.getElementById('artifact-close');
-    if (closeBtn) closeBtn.addEventListener('click', closePanel);
-
-    // Hook copy button
-    const copyBtn = document.getElementById('artifact-copy');
-    if (copyBtn) {
-      copyBtn.addEventListener('click', async () => {
-        try {
-          await navigator.clipboard.writeText(currentCode);
-          copyBtn.textContent = 'Copied!';
-          setTimeout(() => (copyBtn.textContent = 'Copy'), 1500);
-        } catch {
-          copyBtn.textContent = 'Failed';
-          setTimeout(() => (copyBtn.textContent = 'Copy'), 1500);
-        }
-      });
-    }
-
-    // Hook download button
-    const dlBtn = document.getElementById('artifact-download');
-    if (dlBtn) {
-      dlBtn.addEventListener('click', () => {
-        const map = { html: 'html', svg: 'svg', mermaid: 'mmd', python: 'py', json: 'json', csv: 'csv' };
-        const ext = map[currentLang] || 'txt';
-        const blob = new Blob([currentCode], { type: 'text/plain;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `artifact.${ext}`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      });
-    }
-
-    // Hook run button (Python only)
-    const runBtn = document.getElementById('artifact-run');
-    if (runBtn) {
-      runBtn.addEventListener('click', async () => {
-        if (!currentCode || currentLang !== 'python') return;
-        runBtn.disabled = true;
-        runBtn.textContent = 'Running…';
-        try {
-          const res = await fetch('/api/run-python', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code: currentCode }),
-          });
-          const data = await res.json();
-          if (data.error) {
-            setContent(`
-              <div class="artifact-code-wrap">
-                <pre style="color:#ff4466"><code>${esc(data.error)}</code></pre>
-              </div>
-            `, currentCode, currentLang);
-          } else {
-            setContent(`
-              <div class="artifact-code-wrap">
-                <pre><code>${esc(data.output || '(no output)')}</code></pre>
-              </div>
-            `, currentCode, currentLang);
-          }
-        } catch (e) {
-          setContent(`
-            <div class="artifact-code-wrap">
-              <pre style="color:#ff4466"><code>Run failed: ${esc(e.message)}</code></pre>
-            </div>
-          `, currentCode, currentLang);
-        } finally {
-          runBtn.disabled = false;
-          runBtn.textContent = 'Run';
-        }
-      });
-    }
-
-    function closePanel() {
-      panel.classList.remove('open');
-    }
-
-    function openPanel() {
-      panel.classList.add('open');
-    }
-
-    // Toggle Run button visibility based on language
-    function updateRunButton(lang) {
-      if (runBtn) runBtn.style.display = lang === 'python' ? 'inline-block' : 'none';
-    }
-
-    function setContent(html, rawCode, lang) {
-      currentCode = rawCode || '';
-      currentLang = lang || '';
-      contentEl.innerHTML = html;
-      updateRunButton(lang);
-    }
-
-    function renderArtifact({ lang, code }) {
-      if (titleEl) titleEl.textContent = `Artifact · ${lang}`;
-      openPanel();
-
-      if (lang === 'html') {
-        const blob = new Blob([code], { type: 'text/html' });
-        const src = URL.createObjectURL(blob);
-        setContent(`
-          <div class="artifact-iframe-wrap">
-            <iframe sandbox="allow-scripts" src="${src}"></iframe>
-          </div>
-        `, code, lang);
-      } else if (lang === 'svg') {
-        const blob = new Blob([code], { type: 'image/svg+xml' });
-        const src = URL.createObjectURL(blob);
-        setContent(`
-          <div class="artifact-iframe-wrap">
-            <iframe sandbox="allow-scripts" src="${src}"></iframe>
-          </div>
-        `, code, lang);
-      } else if (lang === 'mermaid') {
-        try {
-          if (window.mermaid) {
-            const id = 'mm-' + Math.random().toString(36).slice(2);
-            setContent(`
-              <div class="mermaid" id="${id}">${esc(code)}</div>
-            `, code, lang);
-            mermaid.init(undefined, '#' + id);
-          } else {
-            setContent('<div class="artifact-empty">Mermaid library not loaded</div>', code, lang);
-          }
-        } catch (e) {
-          setContent('<div class="artifact-empty">Mermaid render error: ' + esc(e.message) + '</div>', code, lang);
-        }
-      } else {
-        setContent(`
-          <div class="artifact-code-wrap">
-            <pre><code class="language-${lang}">${esc(code)}</code></pre>
-          </div>
-        `, code, lang);
-      }
-    }
-
-    // Expose a lightweight API on window so plugins / "Open in Artifact" buttons can trigger it
-    window.HermesArtifacts = {
-      open: renderArtifact,
-      close: closePanel,
-    };
-  })();
-
-  // Inject "Open in Artifact" inline buttons on every assistant bubble after streaming ends
-  (function listenArtifactClicks() {
-    if (!window.HermesProxy) return;
-    window.HermesProxy.on('artifactDetected', ({ messageId, index, lang }) => {
-      // Find the assistant bubble that carries this msgRef
-      const bubble = document.querySelector(`.msg.assistant .bubble[data-msg-ref="${messageId}"]`);
-      if (!bubble) return;
-      // Find the <code> block with this specific language inside the bubble
-      const pre = bubble.querySelectorAll('pre')[index];
-      if (!pre) return;
-      // Skip if button already injected
-      if (pre.querySelector('.open-artifact-btn')) return;
-      const btn = document.createElement('button');
-      btn.className = 'open-artifact-btn';
-      btn.textContent = 'Open in Artifact';
-      btn.style.cssText = 'position:absolute; top:4px; right:72px; background:transparent; border:1px solid var(--accent); color:var(--accent); border-radius:3px; padding:2px 8px; font-size:11px; font-family:inherit; cursor:pointer;';
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const key = `${messageId}_${index}`;
-        if (!_artifactStore.has(key)) return;
-        const { lang: l, code } = _artifactStore.get(key);
-        window.HermesArtifacts.open({ lang: l, code });
-      });
-      pre.style.position = 'relative';
-      pre.appendChild(btn);
-    });
-  })();
 })();

@@ -1,6 +1,7 @@
-// HermesProxy — global event bus for plugins
-// Type: any, because plugins are untrusted third-party code.
+// HermesProxy — stable plugin API surface for hermes-proxy
+// Versioned so plugins can guard compatibility.
 window.HermesProxy = {
+  version: 1,
   _hooks: {},
   on(event, fn) {
     (this._hooks[event] ||= []).push(fn);

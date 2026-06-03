@@ -68,15 +68,20 @@
     input.value = '';
     input.dispatchEvent(new Event('input', { bubbles: true }));
 
+    const hp = window.HermesProxy;
+
     if (cmd.name === 'new') {
-      const btn = document.getElementById('new-session-btn');
-      if (btn) btn.click();
+      if (hp && typeof hp.newSession === 'function') {
+        hp.newSession();
+      }
     } else if (cmd.name === 'clear') {
-      const thread = document.getElementById('thread');
-      if (thread) while (thread.firstChild) thread.removeChild(thread.firstChild);
+      if (hp && typeof hp.clearThread === 'function') {
+        hp.clearThread();
+      }
     } else if (cmd.name === 'search') {
-      const el = document.getElementById('search-input');
-      if (el) { el.focus(); }
+      if (hp && typeof hp.focusSearch === 'function') {
+        hp.focusSearch();
+      }
     } else if (cmd.name === 'theme') {
       const t = document.documentElement.getAttribute('data-theme');
       const next = t === 'light' ? 'dark' : 'light';

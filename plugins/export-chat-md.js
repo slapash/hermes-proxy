@@ -12,8 +12,17 @@
     return html.replace(/<[^\u003e]*>/g, '');
   }
 
+  function getCurrentSessionId() {
+    return safe(
+      () => window.HermesProxy && typeof window.HermesProxy.getSessionId === 'function'
+        ? window.HermesProxy.getSessionId()
+        : localStorage.getItem('hermes-session-id'),
+      null,
+    );
+  }
+
   async function exportSession() {
-    const currentId = safe(() => localStorage.getItem('hermes-session-id'), null);
+    const currentId = getCurrentSessionId();
     if (!currentId) {
       alert('Select a session first');
       return;

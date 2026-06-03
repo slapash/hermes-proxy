@@ -16,6 +16,13 @@
     return sessionId ? `${STORAGE_KEY_PREFIX}:${sessionId}` : `${STORAGE_KEY_PREFIX}:global`;
   }
 
+  function getCurrentSessionId() {
+    if (window.HermesProxy && typeof window.HermesProxy.getSessionId === 'function') {
+      return safe(() => window.HermesProxy.getSessionId(), null);
+    }
+    return safe(() => localStorage.getItem('hermes-session-id'), null);
+  }
+
   function save(sessionId, text) {
     safe(() => {
       if (!text || !text.trim()) {
@@ -49,11 +56,7 @@
     const msgInput = document.getElementById('msg-input');
     if (!msgInput) return;
 
-    // Restore for current session on plugin load
-    const keyParts = (window.location.hash || '').split('/');
-    // Fall back to reading hermes-session-id from localStorage since currentSessionId
-    // is in app.js closure and not globally exposed.
-    const storedSession = safe(() => localStorage.getItem('hermes-session-id'), null);
+    const storedSession = getCurrentSessionId();
     const initialDraft = restore(storedSession);
     if (initialDraft) {
       msgInput.value = initialDraft;
@@ -62,7 +65,7 @@
 
     msgInput.addEventListener('input', () => {
       clearTimeout(_timer);
-      const sid = safe(() => localStorage.getItem('hermes-session-id'), null);
+      const sid = getCurrentSessionId();
       _timer = setTimeout(() => {
         save(sid, msgInput.value);
         showIndicator(msgInput);
@@ -76,7 +79,7 @@
         msgInput.dispatchEvent(new Event('input', { bubbles: true }));
       });
       HermesProxy.on('beforeSend', () => {
-        const sid = safe(() => localStorage.getItem('hermes-session-id'), null);
+        const sid = getCurrentSessionId();
         safe(() => localStorage.removeItem(draftKey(sid)));
       });
     }

@@ -98,15 +98,6 @@
   }
 
   function captionFor(tool, label) {
-    const raw = String(tool || label || '').toLowerCase();
-    if (!raw) return 'thinking';
-    if (raw.startsWith('browser') || raw.includes('web')) return 'peeking around';
-    if (raw.includes('terminal') || raw.includes('shell')) return 'typing in the shell';
-    if (raw.includes('patch') || raw.includes('write_file')) return 'stitching code';
-    if (raw.includes('read_file') || raw.includes('search_files')) return 'reading carefully';
-    if (raw.includes('search')) return 'looking it up';
-    if (raw.includes('image')) return 'checking the picture';
-    if (raw.includes('todo')) return 'organizing thoughts';
     return String(label || tool || 'thinking').replace(/[_-]+/g, ' ');
   }
 
