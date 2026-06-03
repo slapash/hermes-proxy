@@ -32,6 +32,12 @@
         display:inline-flex !important;
         align-items:center;
         gap:9px;
+        width:320px;
+        min-width:320px;
+        max-width:320px;
+        min-height:36px;
+        box-sizing:border-box;
+        overflow:hidden;
         padding:9px 13px !important;
         border-radius:999px !important;
         background:linear-gradient(135deg, color-mix(in srgb, var(--surface) 86%, var(--accent) 14%), var(--bg)) !important;
@@ -56,6 +62,11 @@
       .cute-thinking-label {
         font-size:13px;
         color:var(--text);
+        min-width:0;
+        flex:1 1 auto;
+        overflow:hidden;
+        white-space:nowrap;
+        text-overflow:ellipsis;
       }
       .cute-thinking-dots {
         min-width:18px;
@@ -66,6 +77,9 @@
         font-size:12px;
         font-variant-numeric:tabular-nums;
         padding-left:2px;
+        width:38px;
+        flex:0 0 38px;
+        text-align:right;
       }
       @keyframes cuteThinkBob {
         0%,100% { transform:translateY(0) rotate(-1deg); }

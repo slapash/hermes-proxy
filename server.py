@@ -254,7 +254,7 @@ class _MaxBodyMiddleware(BaseHTTPMiddleware):
             content_length = request.headers.get("content-length")
             if content_length:
                 default_limit = 1_048_576
-                # Image uploads are route-limited separately; allow 25 MB files plus
+                # File uploads are route-limited separately; allow 50 MB files plus
                 # small multipart overhead while keeping JSON/chat requests tight.
                 upload_limit = _UPLOAD_MAX_SIZE + 1_048_576
                 limit = upload_limit if request.url.path == "/api/attachments" else default_limit
@@ -1164,8 +1164,7 @@ _PLUGIN_DIR = _STATIC_DIR / "__plugins__"
 _PLUGIN_DIR.mkdir(exist_ok=True)
 _UPLOADS_DIR = Path(__file__).parent / "uploads"
 _UPLOADS_DIR.mkdir(exist_ok=True)
-_UPLOAD_MAX_SIZE = 25 * 1024 * 1024  # 25 MB
-_UPLOAD_WHITELIST = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+_UPLOAD_MAX_SIZE = 50 * 1024 * 1024  # 50 MB
 _UPLOAD_TTL_DAYS = int(os.environ.get("HERMES_PROXY_UPLOAD_TTL_DAYS", "30"))
 
 
@@ -1201,14 +1200,12 @@ def _evict_stale_uploads() -> None:
 
 @app.post("/api/attachments")
 async def api_attachments(request: Request, file: UploadFile = File(...)):
-    """Accept a single authenticated image upload and return markdown URL."""
+    """Accept a single authenticated file upload and return markdown URL."""
     if not _is_authenticated(request):
         return _auth_error()
     if not file.content_type:
         return JSONResponse({"error": "Missing Content-Type"}, status_code=400)
-    ct = file.content_type.lower()
-    if ct not in _UPLOAD_WHITELIST:
-        return JSONResponse({"error": f"File type not allowed: {ct}"}, status_code=400)
+    ct = file.content_type.lower().split(";", 1)[0].strip()
     raw = await file.read()
     if len(raw) > _UPLOAD_MAX_SIZE:
         return JSONResponse({"error": f"File too large (max {_UPLOAD_MAX_SIZE // 1024 // 1024} MB)"}, status_code=400)
@@ -1248,7 +1245,10 @@ async def api_attachments(request: Request, file: UploadFile = File(...)):
     _evict_stale_uploads()
     url = f"/uploads/{final_name}"
     absolute_url = str(request.base_url).rstrip("/") + url
-    md = f"![{final_name}]({absolute_url})"
+    if ct.startswith("image/"):
+        md = f"![{final_name}]({absolute_url})"
+    else:
+        md = f"[{final_name}]({absolute_url})"
     return JSONResponse({
         "url": url,
         "absolute_url": absolute_url,

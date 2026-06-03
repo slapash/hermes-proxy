@@ -96,6 +96,29 @@ def test_upload_allows_images_above_one_mb(client, tmp_path):
     assert Path(data["local_path"]).exists()
 
 
+def test_upload_allows_general_files_and_returns_link_markdown(client, tmp_path):
+    _login(client)
+    payload = b"hello,file\n1,2\n"
+    resp = client.post(
+        "/api/attachments",
+        files={"file": ("notes.csv", payload, "text/csv; charset=utf-8")},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["filename"].startswith("notes_")
+    assert data["filename"].endswith(".csv")
+    assert data["mime_type"] == "text/csv"
+    assert data["size"] == len(payload)
+    assert data["markdown"].startswith("[notes_")
+    assert not data["markdown"].startswith("![")
+    assert Path(data["local_path"]).exists()
+
+
+def test_upload_limit_is_50mb():
+    assert server._UPLOAD_MAX_SIZE == 50 * 1024 * 1024
+
+
 def test_first_chat_reassigns_pending_uploads_to_new_session(monkeypatch, tmp_path):
     meta_db = tmp_path / "proxy_meta.db"
     uploads_dir = tmp_path / "uploads"

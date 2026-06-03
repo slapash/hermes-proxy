@@ -360,6 +360,12 @@
     /* thinking indicator */
     .thinking-bubble {
       display: inline-flex; align-items: center; gap: 10px;
+      width: 300px;
+      min-width: 300px;
+      max-width: 300px;
+      min-height: 36px;
+      box-sizing: border-box;
+      overflow: hidden;
       background: var(--bg) !important;
       border: 1px solid var(--border);
       padding: 10px 16px !important;
@@ -375,8 +381,8 @@
       display: inline-block;
       flex-shrink: 0;
     }
-    .thinking-text { font-weight: 500; }
-    .thinking-elapsed { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .thinking-text { font-weight: 500; min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .thinking-elapsed { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; width: 38px; flex: 0 0 38px; text-align: right; }
     @keyframes thinkPulse { 0%,100% { opacity:.3; transform:scale(.7); } 50% { opacity:1; transform:scale(1); } }
 
     /* input area */
@@ -411,12 +417,13 @@
     }
     #attach-btn:hover { border-color: var(--accent); color: var(--accent); }
     #send-btn {
-      background: var(--accent); color: #000; border: none; border-radius: 6px;
-      padding: 10px 18px; font-family: inherit; font-size: 14px; font-weight: bold;
-      cursor: pointer; transition: opacity .15s; white-space: nowrap; flex-shrink: 0;
-      height: 42px;
+      background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+      width: 42px; min-width: 42px; height: 42px; padding: 0;
+      cursor: pointer; transition: opacity .15s, transform .15s; flex-shrink: 0;
+      display: inline-grid; place-items: center;
     }
-    #send-btn:hover:not(:disabled) { opacity: .85; }
+    #send-btn svg { width: 18px; height: 18px; display: block; transform: translateX(1px); }
+    #send-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
     #send-btn:disabled { opacity: .4; cursor: not-allowed; }
 
     /* ── Attachments ── */
@@ -693,11 +700,15 @@
     <div id="thread"></div>
     <div id="input-area">
       <div id="attachment-previews"></div>
-      <input type="file" id="file-input" accept="image/*" multiple style="display:none" />
+      <input type="file" id="file-input" multiple style="display:none" />
       <div class="input-row">
-        <button id="attach-btn" title="Attach image">&#128206;</button>
+        <button id="attach-btn" title="Attach file">&#128206;</button>
         <textarea id="msg-input" placeholder="Message hermes…" rows="1"></textarea>
-        <button id="send-btn">Send</button>
+        <button id="send-btn" title="Send" aria-label="Send">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path fill="currentColor" d="M3.4 20.4 21.6 12 3.4 3.6l1.5 6.5L14 12l-9.1 1.9-1.5 6.5Z"/>
+          </svg>
+        </button>
       </div>
     </div>
   </div>
@@ -724,7 +735,7 @@
 
 <!-- Drag-and-drop overlay -->
 <div id="drag-overlay">
-  <div class="drag-overlay-box">Drop images here</div>
+  <div class="drag-overlay-box">Drop files here</div>
 </div>
 
 <div id="toast"></div>

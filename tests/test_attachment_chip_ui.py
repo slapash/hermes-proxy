@@ -9,10 +9,15 @@ def test_attachment_ui_uses_horizontal_basename_pills_above_input():
     render_fn = app_js[app_js.index('function _renderAttachmentPreviews'):app_js.index('async function _uploadAttachment')]
 
     assert '<div id="attachment-previews"></div>\n      <input type="file"' in html
+    assert 'id="file-input" accept="image/*"' not in html
+    assert 'title="Attach file"' in html
+    assert 'Drop files here' in html
     assert '<textarea id="msg-input"' in html
 
     assert 'function _displayAttachmentName' in app_js
+    assert "const name = filename || 'file';" in app_js
     assert 'function _middleEllipsis' in app_js
+    assert "return name || 'file';" in app_js
     assert "item.className = 'attachment-row'" in render_fn
     assert "icon.className = 'attachment-icon'" in render_fn
     assert "name.className = 'attachment-name'" in render_fn

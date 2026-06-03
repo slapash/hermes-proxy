@@ -980,13 +980,13 @@
 
   // ── Attachments ──
   function _displayAttachmentName(filename) {
-    const name = filename || 'image';
+    const name = filename || 'file';
     const dot = name.lastIndexOf('.');
     return dot > 0 ? name.slice(0, dot) : name;
   }
 
   function _middleEllipsis(name, max = 28) {
-    if (!name || name.length <= max) return name || 'image';
+    if (!name || name.length <= max) return name || 'file';
     const front = Math.ceil((max - 1) * 0.66);
     const back = Math.max(3, max - 1 - front);
     return `${name.slice(0, front)}…${name.slice(-back)}`;
@@ -1038,6 +1038,10 @@
       if (!res.ok) throw new Error(data.error || 'Upload failed');
       att.url = data.url;
       att.markdown = data.markdown;
+      att.absolute_url = data.absolute_url;
+      att.filename = data.filename;
+      att.mime_type = data.mime_type;
+      att.local_path = data.local_path;
       att.uploaded = true;
       att.progress = 100;
     } catch (err) {
@@ -1048,8 +1052,8 @@
   }
 
   function _queueFiles(files) {
-    const images = Array.from(files || []).filter(f => f.type && f.type.startsWith('image/'));
-    for (const file of images) {
+    const selected = Array.from(files || []);
+    for (const file of selected) {
       const att = { file, previewUrl: URL.createObjectURL(file), uploaded: false, progress: 0, error: '' };
       pendingAttachments.push(att);
       _uploadAttachment(att);
@@ -1094,11 +1098,18 @@
     const explicitText = typeof options === 'string' ? options : options.text;
     const skipUserAppend = Boolean(options && options.skipUserAppend);
     const text = (explicitText !== undefined ? explicitText : msgInput.value).trim();
-    const readyAttachments = pendingAttachments.filter(a => a.uploaded && !a.error).map(a => ({ url: a.url, markdown: a.markdown }));
+    const readyAttachments = pendingAttachments.filter(a => a.uploaded && !a.error).map(a => ({
+      url: a.url,
+      markdown: a.markdown,
+      absolute_url: a.absolute_url,
+      filename: a.filename,
+      mime_type: a.mime_type,
+      local_path: a.local_path,
+    }));
     const uploading = pendingAttachments.some(a => !a.uploaded && !a.error);
     if (streaming || (!text && readyAttachments.length === 0)) return;
     if (uploading) {
-      _showToast('Still uploading images…', true);
+      _showToast('Still uploading files…', true);
       return;
     }
     const errored = pendingAttachments.filter(a => a.error);
@@ -1119,7 +1130,7 @@
     msgInput.style.height = 'auto';
     dismissSessionLostBanner();
 
-    const displayText = text || '(image attachment)';
+    const displayText = text || '(file attachment)';
     if (!currentSessionId && !searchInput.value.trim()) {
       _addOptimisticSession(displayText);
     }
