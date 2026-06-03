@@ -82,7 +82,7 @@
       document.querySelectorAll('#theme-toggle').forEach(b => b.textContent = now === 'light' ? '🌙' : '☀️');
     });
     // Mobile: append to topbar (flex row, pushes right via margin-left:auto)
-    if (topbar && getComputedStyle(topbar).display !== 'none') {
+    if (topbar) {
       topbar.appendChild(btn);
       return;
     }

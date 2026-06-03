@@ -75,12 +75,10 @@ def test_toggle_button_source_has_dual_insertion():
 const src = require('fs').readFileSync('/home/hermes/apps/hermes-proxy/plugins/light-theme.js','utf8');
 const hasTopbar = /topbar/.test(src);
 const hasSidebarHeader = /sidebar-header/.test(src);
-const hasDisplayCheck = /getComputedStyle/.test(src);
 console.log(JSON.stringify({
   hasTopbar,
   hasSidebarHeader,
-  hasDisplayCheck,
-  dualInsertion: hasTopbar && hasSidebarHeader && hasDisplayCheck,
+  dualInsertion: hasTopbar && hasSidebarHeader,
 }));
 """
     data = _run_js(js)
