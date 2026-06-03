@@ -3,8 +3,7 @@ import sys
 
 sys.path.insert(0, "/home/hermes/apps/hermes-proxy")
 
-from config import _SIGNING_KEY
-from server import _make_token
+from core import _SIGNING_KEY, _make_token
 from fastapi.testclient import TestClient
 import server
 

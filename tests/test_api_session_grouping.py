@@ -10,6 +10,7 @@ os.environ.setdefault('API_SERVER_KEY', 'testkey123')
 
 from fastapi.testclient import TestClient
 import server
+import core
 
 
 def _make_state_db(path):
@@ -81,8 +82,8 @@ def test_api_sessions_groups_compression_children_by_root_latest_leaf(tmp_path, 
     meta_conn.commit()
     meta_conn.close()
 
-    monkeypatch.setattr(server, "_STATE_DB_PATH", str(state_db))
-    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
+    monkeypatch.setattr(core, "_STATE_DB_PATH", str(state_db))
+    monkeypatch.setattr(core, "_PROXY_META_DB_PATH", str(meta_db))
 
     client = TestClient(server.app)
     login = client.post("/auth/login", json={"password": "testpass123"})
@@ -118,8 +119,8 @@ def test_api_sessions_paginates_after_grouping_visible_conversations(tmp_path, m
     meta_conn.commit()
     meta_conn.close()
 
-    monkeypatch.setattr(server, "_STATE_DB_PATH", str(state_db))
-    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
+    monkeypatch.setattr(core, "_STATE_DB_PATH", str(state_db))
+    monkeypatch.setattr(core, "_PROXY_META_DB_PATH", str(meta_db))
 
     client = TestClient(server.app)
     login = client.post("/auth/login", json={"password": "testpass123"})

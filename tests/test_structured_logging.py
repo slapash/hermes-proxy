@@ -6,12 +6,13 @@ import sys
 sys.path.insert(0, "/home/hermes/apps/hermes-proxy")
 
 import server
+import core
 from fastapi.testclient import TestClient
 
 
 def test_json_formatter_outputs_valid_json():
     """_JSONFormatter produces parseable JSON with required fields."""
-    fmt = server._JSONFormatter()
+    fmt = core._JSONFormatter()
     record = logging.LogRecord(
         name="test", level=logging.WARNING, pathname="", lineno=0,
         msg="test message", args=(), exc_info=None,
@@ -27,7 +28,7 @@ def test_json_formatter_outputs_valid_json():
 
 def test_json_formatter_includes_extra_fields():
     """_JSONFormatter merges extra fields like method, path, status."""
-    fmt = server._JSONFormatter()
+    fmt = core._JSONFormatter()
     record = logging.LogRecord(
         name="test", level=logging.INFO, pathname="", lineno=0,
         msg="GET /api/chat 200", args=(), exc_info=None,
@@ -59,9 +60,9 @@ def test_request_id_in_response_headers():
 
 def test_text_formatter_output():
     """_TextFormatter includes request_id and session_id markers."""
-    server._request_id.set("abcd1234")
-    server._session_id_ctx.set("sess1")
-    fmt = server._TextFormatter()
+    core._request_id.set("abcd1234")
+    core._session_id_ctx.set("sess1")
+    fmt = core._TextFormatter()
     record = logging.LogRecord(
         name="test", level=logging.ERROR, pathname="", lineno=0,
         msg="something broke", args=(), exc_info=None,
@@ -70,8 +71,8 @@ def test_text_formatter_output():
     assert "[abcd1234|sess1]" in output
     assert "something broke" in output
     # Reset
-    server._request_id.set("-")
-    server._session_id_ctx.set("-")
+    core._request_id.set("-")
+    core._session_id_ctx.set("-")
 
 
 if __name__ == "__main__":

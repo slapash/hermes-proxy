@@ -25,7 +25,7 @@ for k in list(os.environ.keys()):
 
 def test_path_traversal_local_rejected():
     """A local: path containing '..' must be blocked (path traversal)."""
-    from server import _load_plugins, _PLUGIN_DIR
+    from core import _load_plugins, _PLUGIN_DIR
     
     with tempfile.TemporaryDirectory() as tmpdir:
         outside = Path(tmpdir) / "outside"
@@ -45,7 +45,7 @@ def test_path_traversal_local_rejected():
 
 def test_allowed_local_path_accepted():
     """A local: path within a safe dir must be accepted."""
-    from server import _load_plugins, _PLUGIN_DIR
+    from core import _load_plugins, _PLUGIN_DIR
     
     with tempfile.TemporaryDirectory() as tmpdir:
         safe = Path(tmpdir) / "safe"
@@ -65,7 +65,7 @@ def test_allowed_local_path_accepted():
 
 def test_symlink_outside_safe_dir_rejected():
     """Even if symlink is inside safe dir, target outside must be rejected."""
-    from server import _load_plugins, _PLUGIN_DIR
+    from core import _load_plugins, _PLUGIN_DIR
     
     with tempfile.TemporaryDirectory() as tmpdir:
         safe = _PLUGIN_DIR  # or a temp subdir
@@ -90,7 +90,7 @@ def test_symlink_outside_safe_dir_rejected():
 
 def test_large_file_rejected():
     """Files over 10MB must be rejected to prevent disk fill."""
-    from server import _load_plugins, _PLUGIN_DIR
+    from core import _load_plugins, _PLUGIN_DIR
     
     with tempfile.TemporaryDirectory() as tmpdir:
         plugin_dir = _PLUGIN_DIR  # use real plugin dir

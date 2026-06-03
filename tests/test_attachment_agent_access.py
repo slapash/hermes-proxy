@@ -1,11 +1,12 @@
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 import server
-
+import core
 
 def _login(client):
     resp = client.post("/auth/login", json={"password": os.environ.get("HERMES_PROXY_PASSWORD", "testpass123")})
@@ -50,8 +51,8 @@ class _FakeAsyncClient:
 def test_chat_forwards_agent_readable_attachment_context(monkeypatch):
     client = TestClient(server.app)
     _login(client)
-    monkeypatch.setattr(server.httpx, "AsyncClient", _FakeAsyncClient)
-    local_file = server._UPLOADS_DIR / "cat.png"
+    monkeypatch.setattr(core.httpx, "AsyncClient", _FakeAsyncClient)
+    local_file = core._UPLOADS_DIR / "cat.png"
     local_file.write_bytes(b"fake image")
 
     resp = client.post(
@@ -116,14 +117,14 @@ def test_upload_allows_general_files_and_returns_link_markdown(client, tmp_path)
 
 
 def test_upload_limit_is_50mb():
-    assert server._UPLOAD_MAX_SIZE == 50 * 1024 * 1024
+    assert core._UPLOAD_MAX_SIZE == 50 * 1024 * 1024
 
 
 def test_first_chat_reassigns_pending_uploads_to_new_session(monkeypatch, tmp_path):
     meta_db = tmp_path / "proxy_meta.db"
     uploads_dir = tmp_path / "uploads"
     uploads_dir.mkdir()
-    conn = server.sqlite3.connect(meta_db)
+    conn = sqlite3.connect(meta_db)
     conn.execute(
         "CREATE TABLE session_meta (session_id TEXT PRIMARY KEY, custom_name TEXT NOT NULL, "
         "updated_at REAL NOT NULL, archived INTEGER NOT NULL DEFAULT 0)"
@@ -135,9 +136,9 @@ def test_first_chat_reassigns_pending_uploads_to_new_session(monkeypatch, tmp_pa
     conn.commit()
     conn.close()
 
-    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
-    monkeypatch.setattr(server, "_UPLOADS_DIR", uploads_dir)
-    monkeypatch.setattr(server.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(core, "_PROXY_META_DB_PATH", str(meta_db))
+    monkeypatch.setattr(core, "_UPLOADS_DIR", uploads_dir)
+    monkeypatch.setattr(core.httpx, "AsyncClient", _FakeAsyncClient)
 
     client = TestClient(server.app)
     _login(client)
@@ -162,7 +163,7 @@ def test_first_chat_reassigns_pending_uploads_to_new_session(monkeypatch, tmp_pa
     )
     assert resp.status_code == 200
 
-    conn = server.sqlite3.connect(meta_db)
+    conn = sqlite3.connect(meta_db)
     row = conn.execute(
         "SELECT session_id FROM uploads WHERE filename = ?",
         (attachment["filename"],),

@@ -11,10 +11,9 @@ from core import (
     _auth_error,
     _SESSION_ID_RE,
     _meta_db_conn,
-    _STATE_DB_PATH,
     _conversation_session_ids,
-    _UPLOADS_DIR,
 )
+import core
 
 router = APIRouter()
 
@@ -28,7 +27,7 @@ async def api_sessions(request: Request, offset: int = 0, limit: int = 30) -> Re
     limit = max(1, min(limit, 100))
 
     try:
-        with sqlite3.connect(_STATE_DB_PATH, timeout=5) as conn:
+        with sqlite3.connect(core._STATE_DB_PATH, timeout=5) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute(
@@ -105,7 +104,7 @@ async def api_sessions_search(q: str, request: Request) -> Response:
     if not q:
         return JSONResponse({"error": "q is required"}, status_code=400)
     try:
-        with sqlite3.connect(_STATE_DB_PATH, timeout=5) as conn:
+        with sqlite3.connect(core._STATE_DB_PATH, timeout=5) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute(
@@ -181,7 +180,7 @@ async def api_session_messages(session_id: str, request: Request) -> Response:
         return _auth_error()
 
     try:
-        with sqlite3.connect(_STATE_DB_PATH, timeout=5) as conn:
+        with sqlite3.connect(core._STATE_DB_PATH, timeout=5) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute(
@@ -225,7 +224,7 @@ async def api_session_rename(session_id: str, request: Request) -> Response:
         # Lazy eviction of orphaned session_meta rows
         try:
             with _meta_db_conn() as pmconn:
-                pmconn.execute(f"ATTACH DATABASE ? AS statedb", (_STATE_DB_PATH,))
+                pmconn.execute(f"ATTACH DATABASE ? AS statedb", (core._STATE_DB_PATH,))
                 pmconn.execute(
                     "DELETE FROM session_meta WHERE session_id NOT IN "
                     "(SELECT id FROM statedb.sessions)"
@@ -299,13 +298,13 @@ async def api_session_delete(session_id: str, request: Request) -> Response:
             return JSONResponse({"error": "Session not found"}, status_code=404)
         placeholders = ",".join("?" for _ in conversation_ids)
 
-        with sqlite3.connect(_STATE_DB_PATH, timeout=5) as conn:
+        with sqlite3.connect(core._STATE_DB_PATH, timeout=5) as conn:
             conn.execute(f"DELETE FROM messages WHERE session_id IN ({placeholders})", conversation_ids)
-            conn.execute(f"DELETE FROM sessions WHERE session_id IN ({placeholders})", conversation_ids)
+            conn.execute(f"DELETE FROM sessions WHERE id IN ({placeholders})", conversation_ids)
             conn.commit()
 
         try:
-            uploads_root = __import__("pathlib").Path(_UPLOADS_DIR).resolve()
+            uploads_root = __import__("pathlib").Path(core._UPLOADS_DIR).resolve()
             with _meta_db_conn() as pmconn:
                 upload_rows = pmconn.execute(
                     f"SELECT filename FROM uploads WHERE session_id IN ({placeholders})", conversation_ids

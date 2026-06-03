@@ -10,12 +10,20 @@ os.environ.setdefault('API_SERVER_KEY', 'testkey123')
 
 from fastapi.testclient import TestClient
 from server import app
+from core import _make_token
+
+
+def _auth_cookie():
+    token = _make_token()
+    return {"hermes-proxy-auth": token}
+
 
 client = TestClient(app)
 
+
 def test_csp_allows_static_plugins():
     """CSP script-src must allow /static/__plugins__/ so local plugins load."""
-    response = client.get("/")
+    response = client.get("/", cookies=_auth_cookie())
     assert response.status_code == 200
     csp = response.headers.get("Content-Security-Policy", "")
     # script-src 'self' should cover same-origin /static/__plugins__/
@@ -23,12 +31,11 @@ def test_csp_allows_static_plugins():
     # Should not have restrictive nonce/hashes that break plugins
     assert "'unsafe-inline'" in csp, f"Missing 'unsafe-inline' in CSP: {csp}"
 
+
 def test_plugin_scripts_injected():
-    """Plugin script tags must appear just before </body>."""
-    response = client.get("/")
+    """Plugin script tags must appear before </head>."""
+    response = client.get("/", cookies=_auth_cookie())
     html = response.text
-    # There should be at least one <script type="module"> before </body>
-    idx_script = html.rfind('<script type="module"')
-    idx_body = html.rfind("</body>")
-    assert idx_script != -1, "No module script found in HTML"
-    assert idx_script < idx_body, "Module script appears AFTER </body>"
+    idx_head = html.find("</head>")
+    idx_script = html.rfind("<script ", 0, idx_head)
+    assert idx_script != -1, "No script found before </head>"

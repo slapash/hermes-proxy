@@ -8,11 +8,12 @@ import threading
 sys.path.insert(0, "/home/hermes/apps/hermes-proxy")
 
 import server
+import core
 
 
 def test_meta_db_wal_mode():
     """Verify that _meta_db_conn() connections have journal_mode=WAL."""
-    conn = server._meta_db_conn()
+    conn = core._meta_db_conn()
     mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     conn.close()
     assert mode == "wal", f"Expected WAL mode, got {mode}"
@@ -20,7 +21,7 @@ def test_meta_db_wal_mode():
 
 def test_meta_db_busy_timeout():
     """Verify that _meta_db_conn() connections have busy_timeout=5000."""
-    conn = server._meta_db_conn()
+    conn = core._meta_db_conn()
     timeout_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
     conn.close()
     assert timeout_ms == 5000, f"Expected busy_timeout=5000, got {timeout_ms}"
@@ -29,7 +30,7 @@ def test_meta_db_busy_timeout():
 def test_concurrent_read_write():
     """Open two connections and verify concurrent reads don't block writes under WAL."""
     # Write a row from one connection
-    conn1 = server._meta_db_conn()
+    conn1 = core._meta_db_conn()
     conn1.execute(
         "INSERT INTO session_meta (session_id, custom_name, updated_at) "
         "VALUES ('concurrent-test', 'test-name', 1234.0)"
@@ -37,7 +38,7 @@ def test_concurrent_read_write():
     conn1.commit()
 
     # Read from another connection while first is still open
-    conn2 = server._meta_db_conn()
+    conn2 = core._meta_db_conn()
     row = conn2.execute(
         "SELECT custom_name FROM session_meta WHERE session_id = 'concurrent-test'"
     ).fetchone()

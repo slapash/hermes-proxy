@@ -4,6 +4,7 @@ import sys
 sys.path.insert(0, "/home/hermes/apps/hermes-proxy")
 
 import server
+import core
 from fastapi.testclient import TestClient
 import sqlite3
 import os
@@ -30,9 +31,9 @@ def test_healthz_returns_ok_when_healthy():
 
 def test_healthz_returns_unhealthy_when_state_db_missing():
     """When state.db is unreachable, /healthz returns 503 with status=unhealthy."""
-    original_db = server._STATE_DB_PATH
+    original_db = core._STATE_DB_PATH
     # Point to a nonexistent path
-    server._STATE_DB_PATH = "/tmp/__healthz_test_nonexistent__/state.db"
+    core._STATE_DB_PATH = "/tmp/__healthz_test_nonexistent__/state.db"
     try:
         client = TestClient(server.app)
         resp = client.get("/healthz")

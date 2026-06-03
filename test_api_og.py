@@ -5,7 +5,7 @@ import time
 # Ensure server modules are importable
 sys.path.insert(0, "/home/hermes/apps/hermes-proxy")
 
-from server import _extract_favicon, _domain_favicon, _extract_title
+from core import _extract_favicon, _domain_favicon, _extract_title
 
 
 def test_extract_favicon_absolute():

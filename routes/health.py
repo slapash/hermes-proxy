@@ -5,7 +5,8 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 import httpx
 
-from core import logger, _STATE_DB_PATH, _meta_db_conn, _API_SERVER_URL
+from core import logger, _meta_db_conn, _API_SERVER_URL
+import core
 
 router = APIRouter()
 
@@ -18,7 +19,7 @@ async def healthz() -> Response:
 
     # 1. state.db readable
     try:
-        with sqlite3.connect(_STATE_DB_PATH, timeout=3) as conn:
+        with sqlite3.connect(core._STATE_DB_PATH, timeout=3) as conn:
             conn.execute("SELECT 1 FROM sessions LIMIT 1")
         checks["state_db"] = True
     except Exception as exc:

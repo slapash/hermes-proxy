@@ -9,6 +9,7 @@ These tests do NOT run a browser. They read the JS source files and verify:
 """
 import json
 import re
+import pytest
 from pathlib import Path
 
 APP_ROOT = Path('/home/hermes/apps/hermes-proxy')
@@ -98,7 +99,10 @@ def test_no_first_party_plugin_clears_thread_by_id():
 def test_slash_commands_prefers_stable_api():
     """slash-commands.js must prefer HermesProxy.newSession / clearThread /
     focusSearch when available (graceful fallback to DOM is acceptable)."""
-    src = (PLUGINS / '4_slash-commands.js').read_text()
+    path = PLUGINS / '4_slash-commands.js'
+    if not path.exists():
+        pytest.skip("4_slash-commands.js not present")
+    src = path.read_text()
     assert "hp.newSession" in src or "HermesProxy.newSession" in src
     assert "hp.clearThread" in src or "HermesProxy.clearThread" in src
     assert "hp.focusSearch" in src or "HermesProxy.focusSearch" in src

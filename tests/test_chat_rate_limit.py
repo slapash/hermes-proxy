@@ -11,28 +11,29 @@ sys.path.insert(0, "/home/hermes/apps/hermes-proxy")
 
 from fastapi.testclient import TestClient
 import server
+import core
 
 
 def _auth_cookie():
     """Return a valid signed auth cookie."""
-    token = server._make_token()
+    token = core._make_token()
     return {"hermes-proxy-auth": token}
 
 
 def test_chat_rate_limit_returns_429():
     """After exceeding burst, /api/chat returns 429 with Retry-After header."""
     # Override rate limit config for testing: 3 req/min, burst=2
-    original_rpm = server._CHAT_RPM
-    original_burst = server._CHAT_BURST
-    original_limits = server._CHAT_RATE_LIMITS.copy()
-    server._CHAT_RPM = 3
-    server._CHAT_BURST = 2
-    server._CHAT_RATE_LIMITS.clear()
+    original_rpm = core._CHAT_RPM
+    original_burst = core._CHAT_BURST
+    original_limits = core._CHAT_RATE_LIMITS.copy()
+    core._CHAT_RPM = 3
+    core._CHAT_BURST = 2
+    core._CHAT_RATE_LIMITS.clear()
 
     try:
         client = TestClient(server.app)
         # Use the SAME auth cookie for all requests so they share a rate limit key
-        token = server._make_token()
+        token = core._make_token()
         cookies = {"hermes-proxy-auth": token}
 
         # Consume burst (2 requests) — these should succeed (or get 500 from
@@ -55,20 +56,20 @@ def test_chat_rate_limit_returns_429():
         assert "retry_after" in resp.json()
         assert "Retry-After" in resp.headers
     finally:
-        server._CHAT_RPM = original_rpm
-        server._CHAT_BURST = original_burst
-        server._CHAT_RATE_LIMITS.clear()
-        server._CHAT_RATE_LIMITS.update(original_limits)
+        core._CHAT_RPM = original_rpm
+        core._CHAT_BURST = original_burst
+        core._CHAT_RATE_LIMITS.clear()
+        core._CHAT_RATE_LIMITS.update(original_limits)
 
 
 def test_rate_limiter_refills_over_time():
     """After waiting, tokens refill and requests succeed again."""
-    server._CHAT_RPM = 60  # 1/sec
-    server._CHAT_BURST = 1
-    server._CHAT_RATE_LIMITS.clear()
+    core._CHAT_RPM = 60  # 1/sec
+    core._CHAT_BURST = 1
+    core._CHAT_RATE_LIMITS.clear()
 
     try:
-        limiter = server._SlidingWindowRateLimiter(rpm=60, burst=1)
+        limiter = core._SlidingWindowRateLimiter(rpm=60, burst=1)
         # Consume the single token
         assert limiter.allow() is True
         # Immediately, should be denied
@@ -77,7 +78,7 @@ def test_rate_limiter_refills_over_time():
         time.sleep(1.1)
         assert limiter.allow() is True
     finally:
-        server._CHAT_RATE_LIMITS.clear()
+        core._CHAT_RATE_LIMITS.clear()
 
 
 if __name__ == "__main__":

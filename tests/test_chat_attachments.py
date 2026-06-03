@@ -9,9 +9,10 @@ os.environ.setdefault('API_SERVER_KEY', 'testkey123')
 
 from fastapi.testclient import TestClient
 import server
+import core
 
 # Disable tight rate-limiting for rapid-fire tests
-server._RATE_LIMIT_MAX = 1000
+core._RATE_LIMIT_MAX = 1000
 
 
 def _login(client):

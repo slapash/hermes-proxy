@@ -4,15 +4,17 @@ import os
 import time
 import tempfile
 import shutil
+from pathlib import Path
 
 sys.path.insert(0, "/home/hermes/apps/hermes-proxy")
 
 import server
+import core
 from fastapi.testclient import TestClient
 
 
 def _auth_cookie():
-    token = server._make_token()
+    token = core._make_token()
     return {"hermes-proxy-auth": token}
 
 
@@ -38,21 +40,21 @@ def test_uploads_stats_returns_structure():
 
 def test_eviction_deletes_old_files():
     """Files older than TTL are cleaned up when _evict_stale_uploads runs."""
-    original_ttl = server._UPLOAD_TTL_DAYS
-    original_uploads = server._UPLOADS_DIR
+    original_ttl = core._UPLOAD_TTL_DAYS
+    original_uploads = core._UPLOADS_DIR
 
     # Use a temp dir so we don't pollute real uploads
     tmpdir = tempfile.mkdtemp()
-    server._UPLOADS_DIR = server.Path(tmpdir)
-    server._UPLOAD_MAX_SIZE = 1024 * 1024  # 1MB for test
+    core._UPLOADS_DIR = Path(tmpdir)
+    core._UPLOAD_MAX_SIZE = 1024 * 1024  # 1MB for test
 
     try:
         # Set a very short TTL for testing (0 days = immediate eviction)
-        server._UPLOAD_TTL_DAYS = 0
+        core._UPLOAD_TTL_DAYS = 0
 
         # Create a fake old upload in the DB
         old_time = time.time() - 86400  # 1 day ago
-        with server._meta_db_conn() as conn:
+        with core._meta_db_conn() as conn:
             conn.execute(
                 "INSERT INTO uploads (filename, size, mime_type, uploaded_at, session_id) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -61,19 +63,19 @@ def test_eviction_deletes_old_files():
             conn.commit()
 
         # Create the file in the temp uploads dir
-        old_file = server.Path(tmpdir) / "old_test_file.png_12345.png"
+        old_file = Path(tmpdir) / "old_test_file.png_12345.png"
         old_file.write_bytes(b"\x89PNG\r\n" + b"\x00" * 94)
 
         assert old_file.exists(), "Setup: old file should exist"
 
         # Run eviction
-        server._evict_stale_uploads()
+        core._evict_stale_uploads()
 
         # File should be deleted
         assert not old_file.exists(), "Old file should be evicted"
 
         # DB row should be deleted
-        with server._meta_db_conn() as conn:
+        with core._meta_db_conn() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) as cnt FROM uploads WHERE filename = ?",
                 ("old_test_file.png_12345.png",),
@@ -81,21 +83,21 @@ def test_eviction_deletes_old_files():
             assert row["cnt"] == 0, "Old upload DB row should be deleted"
 
     finally:
-        server._UPLOAD_TTL_DAYS = original_ttl
-        server._UPLOADS_DIR = original_uploads
-        server._UPLOAD_MAX_SIZE = 25 * 1024 * 1024
+        core._UPLOAD_TTL_DAYS = original_ttl
+        core._UPLOADS_DIR = original_uploads
+        core._UPLOAD_MAX_SIZE = 25 * 1024 * 1024
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def test_eviction_does_not_delete_recent_files():
     """Files within TTL are NOT deleted."""
-    original_ttl = server._UPLOAD_TTL_DAYS
+    original_ttl = core._UPLOAD_TTL_DAYS
 
     try:
-        server._UPLOAD_TTL_DAYS = 30  # 30 days default
+        core._UPLOAD_TTL_DAYS = 30  # 30 days default
 
         # Create a recent upload in the DB
-        with server._meta_db_conn() as conn:
+        with core._meta_db_conn() as conn:
             conn.execute(
                 "INSERT INTO uploads (filename, size, mime_type, uploaded_at, session_id) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -104,10 +106,10 @@ def test_eviction_does_not_delete_recent_files():
             conn.commit()
 
         # Run eviction
-        server._evict_stale_uploads()
+        core._evict_stale_uploads()
 
         # DB row should still exist
-        with server._meta_db_conn() as conn:
+        with core._meta_db_conn() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) as cnt FROM uploads WHERE filename = ?",
                 ("recent_file.png_99999.png",),
@@ -115,12 +117,12 @@ def test_eviction_does_not_delete_recent_files():
             assert row["cnt"] == 1, "Recent upload should NOT be evicted"
 
         # Cleanup
-        with server._meta_db_conn() as conn:
+        with core._meta_db_conn() as conn:
             conn.execute("DELETE FROM uploads WHERE filename = ?", ("recent_file.png_99999.png",))
             conn.commit()
 
     finally:
-        server._UPLOAD_TTL_DAYS = original_ttl
+        core._UPLOAD_TTL_DAYS = original_ttl
 
 
 if __name__ == "__main__":

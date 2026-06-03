@@ -11,6 +11,7 @@ os.environ.setdefault('API_SERVER_KEY', 'testkey123')
 
 from fastapi.testclient import TestClient
 import server
+import core
 
 
 def _make_state_db(path):
@@ -147,8 +148,8 @@ def test_archive_session(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
 
-    monkeypatch.setattr(server, "_STATE_DB_PATH", str(state_db))
-    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
+    monkeypatch.setattr(core, "_STATE_DB_PATH", str(state_db))
+    monkeypatch.setattr(core, "_PROXY_META_DB_PATH", str(meta_db))
 
     client = TestClient(server.app)
     _authed_client(client)
@@ -183,8 +184,8 @@ def test_unarchive_session(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
 
-    monkeypatch.setattr(server, "_STATE_DB_PATH", str(state_db))
-    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
+    monkeypatch.setattr(core, "_STATE_DB_PATH", str(state_db))
+    monkeypatch.setattr(core, "_PROXY_META_DB_PATH", str(meta_db))
 
     client = TestClient(server.app)
     _authed_client(client)
@@ -217,8 +218,8 @@ def test_archive_requires_auth(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
 
-    monkeypatch.setattr(server, "_STATE_DB_PATH", str(state_db))
-    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
+    monkeypatch.setattr(core, "_STATE_DB_PATH", str(state_db))
+    monkeypatch.setattr(core, "_PROXY_META_DB_PATH", str(meta_db))
 
     client = TestClient(server.app)
     # No login — should get 401
@@ -232,8 +233,8 @@ def test_archive_grouped_child_archives_entire_conversation(tmp_path, monkeypatc
     _make_grouped_state_db(state_db)
     _make_meta_db(meta_db)
 
-    monkeypatch.setattr(server, "_STATE_DB_PATH", str(state_db))
-    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
+    monkeypatch.setattr(core, "_STATE_DB_PATH", str(state_db))
+    monkeypatch.setattr(core, "_PROXY_META_DB_PATH", str(meta_db))
 
     client = TestClient(server.app)
     _authed_client(client)
@@ -282,9 +283,9 @@ def test_delete_session(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
 
-    monkeypatch.setattr(server, "_STATE_DB_PATH", str(state_db))
-    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
-    monkeypatch.setattr(server, "_UPLOADS_DIR", uploads_dir)
+    monkeypatch.setattr(core, "_STATE_DB_PATH", str(state_db))
+    monkeypatch.setattr(core, "_PROXY_META_DB_PATH", str(meta_db))
+    monkeypatch.setattr(core, "_UPLOADS_DIR", uploads_dir)
 
     client = TestClient(server.app)
     _authed_client(client)
@@ -351,8 +352,8 @@ def test_search_excludes_archived_session(tmp_path, monkeypatch):
     meta_conn.commit()
     meta_conn.close()
 
-    monkeypatch.setattr(server, "_STATE_DB_PATH", str(state_db))
-    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
+    monkeypatch.setattr(core, "_STATE_DB_PATH", str(state_db))
+    monkeypatch.setattr(core, "_PROXY_META_DB_PATH", str(meta_db))
 
     client = TestClient(server.app)
     _authed_client(client)
@@ -379,9 +380,9 @@ def test_delete_grouped_child_deletes_entire_conversation(tmp_path, monkeypatch)
     meta_conn.commit()
     meta_conn.close()
 
-    monkeypatch.setattr(server, "_STATE_DB_PATH", str(state_db))
-    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
-    monkeypatch.setattr(server, "_UPLOADS_DIR", uploads_dir)
+    monkeypatch.setattr(core, "_STATE_DB_PATH", str(state_db))
+    monkeypatch.setattr(core, "_PROXY_META_DB_PATH", str(meta_db))
+    monkeypatch.setattr(core, "_UPLOADS_DIR", uploads_dir)
 
     client = TestClient(server.app)
     _authed_client(client)
@@ -420,8 +421,8 @@ def test_delete_nonexistent_session(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
 
-    monkeypatch.setattr(server, "_STATE_DB_PATH", str(state_db))
-    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
+    monkeypatch.setattr(core, "_STATE_DB_PATH", str(state_db))
+    monkeypatch.setattr(core, "_PROXY_META_DB_PATH", str(meta_db))
 
     client = TestClient(server.app)
     _authed_client(client)
@@ -442,8 +443,8 @@ def test_delete_requires_auth(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
 
-    monkeypatch.setattr(server, "_STATE_DB_PATH", str(state_db))
-    monkeypatch.setattr(server, "_PROXY_META_DB_PATH", str(meta_db))
+    monkeypatch.setattr(core, "_STATE_DB_PATH", str(state_db))
+    monkeypatch.setattr(core, "_PROXY_META_DB_PATH", str(meta_db))
 
     client = TestClient(server.app)
     resp = client.delete("/api/sessions/sess-alpha")
