@@ -1041,6 +1041,11 @@
       msgInput.style.height = 'auto';
     };
     window.HermesProxy.focusInput = () => msgInput.focus();
+    window.HermesProxy.setTheme = (name) => {
+      if (name === 'light') { document.documentElement.setAttribute('data-theme', 'light'); }
+      else { document.documentElement.removeAttribute('data-theme'); }
+      window.HermesProxy.emit('themeChange', { theme: name });
+    };
     window.HermesProxy.newSession = () => {
       if (newSessionBtn) newSessionBtn.click();
     };
