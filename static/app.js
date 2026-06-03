@@ -1234,6 +1234,159 @@
     }
   }
 
+  // ── Voice Input ──
+  const micBtn = document.getElementById('mic-btn');
+  const voiceViz = document.getElementById('voice-viz');
+  const voiceCanvas = document.getElementById('voice-canvas');
+  const vizStatus = document.getElementById('viz-status');
+  const vizLangBtn = document.getElementById('viz-lang');
+
+  // Feature detection: SpeechRecognition + on-device support
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const hasOnDeviceSTT = SpeechRecognition && 'processLocally' in SpeechRecognition.prototype;
+  if (hasOnDeviceSTT && micBtn) micBtn.style.display = 'inline-grid';
+
+  let recognition = null;
+  let voiceLang = 'fr-FR'; // Default: French
+  let voiceAnimId = null;
+
+  function _startVoiceAnim() {
+    if (!voiceCanvas) return;
+    const ctx = voiceCanvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const w = voiceCanvas.clientWidth;
+    const h = voiceCanvas.clientHeight;
+    voiceCanvas.width = w * dpr;
+    voiceCanvas.height = h * dpr;
+    ctx.scale(dpr, dpr);
+    const blobs = Array.from({ length: 5 }, (_, i) => ({
+      x: (w / 6) * (i + 1),
+      baseR: 4 + Math.random() * 4,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.8 + Math.random() * 1.2,
+    }));
+    let t = 0;
+    function frame() {
+      ctx.clearRect(0, 0, w, h);
+      blobs.forEach(b => {
+        const r = b.baseR + Math.sin(t * b.speed + b.phase) * 4;
+        ctx.beginPath();
+        ctx.arc(b.x, h / 2, Math.max(2, r), 0, Math.PI * 2);
+        ctx.fillStyle = '#00ff88';
+        ctx.globalAlpha = 0.6;
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+      t += 0.05;
+      voiceAnimId = requestAnimationFrame(frame);
+    }
+    frame();
+  }
+
+  function _stopVoiceAnim() {
+    if (voiceAnimId) cancelAnimationFrame(voiceAnimId);
+    voiceAnimId = null;
+    if (voiceCanvas) {
+      const ctx = voiceCanvas.getContext('2d');
+      ctx.clearRect(0, 0, voiceCanvas.width, voiceCanvas.height);
+    }
+  }
+
+  function _setVoiceStatus(text) {
+    if (vizStatus) vizStatus.textContent = text;
+  }
+
+  function startRecording() {
+    if (!SpeechRecognition) return;
+    // Hide keyboard on mobile
+    if (document.activeElement === msgInput) msgInput.blur();
+
+    recognition = new SpeechRecognition();
+    recognition.lang = voiceLang;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.processLocally = true;
+
+    recognition.onstart = () => {
+      micBtn.classList.add('recording');
+      voiceViz.classList.add('active');
+      _setVoiceStatus('Listening…');
+      _startVoiceAnim();
+      if (window.HermesProxy) window.HermesProxy.emit('voice:start', { lang: voiceLang });
+    };
+
+    recognition.onresult = (event) => {
+      // Append results (SpeechRecognition naturally appends)
+      let interim = '';
+      let final = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          final += transcript + ' ';
+        } else {
+          interim += transcript;
+        }
+      }
+      if (final) {
+        msgInput.value = (msgInput.value + ' ' + final.trim()).trim();
+        msgInput.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      _setVoiceStatus(interim || 'Listening…');
+      if (window.HermesProxy) {
+        window.HermesProxy.emit('voice:result', { final, interim, lang: voiceLang });
+      }
+    };
+
+    recognition.onerror = (event) => {
+      let err = 'Speech error';
+      if (event.error === 'not-allowed') err = 'Microphone access needed';
+      else if (event.error === 'no-speech') err = 'No speech detected';
+      else if (event.error === 'network') err = 'Network error';
+      _setVoiceStatus(err);
+      if (window.HermesProxy) window.HermesProxy.emit('voice:error', { error: event.error });
+    };
+
+    recognition.onend = () => {
+      micBtn.classList.remove('recording');
+      voiceViz.classList.remove('active');
+      _stopVoiceAnim();
+      _setVoiceStatus('Listening…');
+      if (window.HermesProxy) window.HermesProxy.emit('voice:end');
+    };
+
+    try { recognition.start(); } catch {}
+  }
+
+  function stopRecording() {
+    if (recognition) {
+      try { recognition.stop(); } catch {}
+      recognition = null;
+    }
+  }
+
+  if (micBtn) {
+    micBtn.addEventListener('click', () => {
+      if (micBtn.classList.contains('recording')) {
+        stopRecording();
+      } else {
+        startRecording();
+      }
+    });
+  }
+
+  if (vizLangBtn) {
+    vizLangBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      voiceLang = voiceLang === 'fr-FR' ? 'en-US' : 'fr-FR';
+      vizLangBtn.textContent = voiceLang === 'fr-FR' ? 'FR' : 'EN';
+      if (recognition) {
+        // Restart with new lang
+        stopRecording();
+        setTimeout(startRecording, 150);
+      }
+    });
+  }
+
   // ── Boot ──
   checkAuth();
 })();
